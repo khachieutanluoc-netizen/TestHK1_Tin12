@@ -1,0 +1,6 @@
+{
+  "name": "Ứng dụng Ôn tập kiểm tra Giữa học Kỳ 1 năm học 2026-2027 Bộ môn Tin học Tỉnh Vĩnh Long",
+  "description": "Ứng dụng ôn tập và thi thử trực tuyến môn Tin học lớp 12 theo ma trận đề kiểm tra chuẩn hóa, hỗ trợ giám sát phòng thi, phân tích lỗ hổng kiến thức, đồng bộ Google Drive và Dashboard thống kê toàn tỉnh Vĩnh Long.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
