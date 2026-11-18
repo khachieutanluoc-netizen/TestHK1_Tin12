@@ -1,15 +1,12 @@
-import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import {
-  Auth,
   GoogleAuthProvider,
   User,
-  getAuth,
   onAuthStateChanged,
   signInWithPopup,
   signOut,
 } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
 import { AttemptRecord } from '../types/exam';
+import { firebaseAuth } from './firebaseClient';
 
 // Thư mục Google Drive đích được người dùng chỉ định
 export const DRIVE_TARGET_FOLDER_ID = '13noH2pKEpJVVfwy5r2zO-q_U4GVEI46x';
@@ -18,19 +15,10 @@ export const DRIVE_TARGET_FOLDER_URL =
 export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const CONSOLIDATED_FILE_NAME = 'vinhlong_tinhoc12_hk1_2026_consolidated.json';
 
-let firebaseApp: FirebaseApp | null = null;
-let firebaseAuth: Auth | null = null;
-
 // TUYỆT ĐỐI chỉ lưu accessToken trong bộ nhớ RAM (không lưu localStorage/sessionStorage)
 let cachedAccessToken: string | null = null;
 
-function ensureAuth(): Auth {
-  if (!firebaseApp) {
-    firebaseApp = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
-  }
-  if (!firebaseAuth) {
-    firebaseAuth = getAuth(firebaseApp);
-  }
+function ensureAuth() {
   return firebaseAuth;
 }
 

@@ -1,0 +1,125 @@
+{
+  "entities": {
+    "Attempt": {
+      "title": "AttemptRecord",
+      "description": "Một lượt thi thử của học sinh được chấm điểm và đồng bộ đa thiết bị.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 3,
+          "maxLength": 128,
+          "description": "Mã duy nhất của lượt thi"
+        },
+        "school": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200,
+          "description": "Tên trường THPT / Trung tâm GDTX"
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 20,
+          "description": "Số điện thoại thí sinh"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 160,
+          "description": "Email thí sinh"
+        },
+        "submittedAt": {
+          "type": "string",
+          "format": "date-time",
+          "minLength": 10,
+          "maxLength": 64,
+          "description": "Thời điểm nộp bài ISO 8601"
+        },
+        "durationSpentSeconds": {
+          "type": "number",
+          "description": "Số giây đã làm bài"
+        },
+        "violations": {
+          "type": "number",
+          "description": "Số lần vi phạm rời màn hình / chuyển tab"
+        },
+        "autoSubmittedReason": {
+          "type": "string",
+          "enum": ["timeout", "violations", null],
+          "description": "Lý do thu bài tự động nếu có"
+        },
+        "part1Score": {
+          "type": "number",
+          "description": "Điểm Phần I (tối đa 6.0)"
+        },
+        "part2Score": {
+          "type": "number",
+          "description": "Điểm Phần II (tối đa 4.0)"
+        },
+        "totalScore": {
+          "type": "number",
+          "description": "Tổng điểm (tối đa 10.0)"
+        },
+        "exam": {
+          "type": "object",
+          "description": "Nội dung đề thi đã sinh ngẫu nhiên theo ma trận"
+        },
+        "answers": {
+          "type": "object",
+          "description": "Đáp án thí sinh đã chọn cho Phần I và Phần II"
+        },
+        "lessonBreakdown": {
+          "type": "array",
+          "description": "Phân tích mức độ nắm vững từng bài học"
+        },
+        "weakTopics": {
+          "type": "array",
+          "description": "Danh sách mã bài học dưới 70%"
+        },
+        "feedbackSummary": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Nhận xét tổng hợp kiến thức còn hạn chế"
+        },
+        "syncedToDrive": {
+          "type": "boolean",
+          "description": "Trạng thái đã lưu lên Google Drive"
+        },
+        "isSeedData": {
+          "type": "boolean",
+          "description": "Đánh dấu dữ liệu mẫu (luôn false trên Firestore)"
+        }
+      },
+      "required": [
+        "id",
+        "school",
+        "phone",
+        "email",
+        "submittedAt",
+        "durationSpentSeconds",
+        "violations",
+        "autoSubmittedReason",
+        "part1Score",
+        "part2Score",
+        "totalScore",
+        "exam",
+        "answers",
+        "lessonBreakdown",
+        "weakTopics",
+        "feedbackSummary",
+        "syncedToDrive",
+        "isSeedData"
+      ]
+    }
+  },
+  "firestore": {
+    "/attempts/{attemptId}": {
+      "schema": {
+        "$ref": "#/entities/Attempt"
+      },
+      "description": "Kho lưu trữ kết quả bài thi thực tế đồng bộ thời gian thực trên mọi thiết bị"
+    }
+  }
+}

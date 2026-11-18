@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string
+        && id.size() >= 3
+        && id.size() <= 128
+        && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidAttempt(data) {
+      return data.keys().hasAll([
+          'id', 'school', 'phone', 'email', 'submittedAt',
+          'durationSpentSeconds', 'violations', 'autoSubmittedReason',
+          'part1Score', 'part2Score', 'totalScore',
+          'exam', 'answers', 'lessonBreakdown', 'weakTopics',
+          'feedbackSummary', 'syncedToDrive', 'isSeedData'
+        ])
+        && data.keys().hasOnly([
+          'id', 'school', 'phone', 'email', 'submittedAt',
+          'durationSpentSeconds', 'violations', 'autoSubmittedReason',
+          'part1Score', 'part2Score', 'totalScore',
+          'exam', 'answers', 'lessonBreakdown', 'weakTopics',
+          'feedbackSummary', 'syncedToDrive', 'isSeedData'
+        ])
+        && isValidId(data.id)
+        && data.school is string && data.school.size() >= 3 && data.school.size() <= 200
+        && data.phone is string && data.phone.size() >= 8 && data.phone.size() <= 20
+        && data.email is string && data.email.size() >= 5 && data.email.size() <= 160
+        && data.submittedAt is string && data.submittedAt.size() >= 10 && data.submittedAt.size() <= 64
+        && data.durationSpentSeconds is number && data.durationSpentSeconds >= 0 && data.durationSpentSeconds <= 7200
+        && data.violations is int && data.violations >= 0 && data.violations <= 50
+        && (
+          data.autoSubmittedReason == null
+          || (data.autoSubmittedReason is string && data.autoSubmittedReason in ['timeout', 'violations'])
+        )
+        && data.part1Score is number && data.part1Score >= 0 && data.part1Score <= 6
+        && data.part2Score is number && data.part2Score >= 0 && data.part2Score <= 4
+        && data.totalScore is number && data.totalScore >= 0 && data.totalScore <= 10
+        && data.exam is map
+        && data.exam.keys().hasAll(['examId', 'createdAt', 'durationSeconds', 'part1', 'part2'])
+        && data.exam.examId is string && data.exam.examId.size() <= 64
+        && data.exam.part1 is list && data.exam.part1.size() <= 30
+        && data.exam.part2 is list && data.exam.part2.size() <= 10
+        && data.answers is map
+        && data.answers.keys().hasAll(['part1', 'part2'])
+        && data.lessonBreakdown is list && data.lessonBreakdown.size() >= 1 && data.lessonBreakdown.size() <= 12
+        && data.weakTopics is list && data.weakTopics.size() <= 12
+        && (data.weakTopics.size() == 0 || data.weakTopics[0] is int)
+        && data.feedbackSummary is string && data.feedbackSummary.size() <= 2000
+        && data.syncedToDrive is bool
+        && data.isSeedData is bool;
+    }
+
+    match /attempts/{attemptId} {
+      allow get: if isValidId(attemptId) && (resource == null || existing().isSeedData == false);
+      allow list: if existing().isSeedData == false;
+      allow create: if isValidId(attemptId)
+        && isValidAttempt(incoming())
+        && incoming().id == attemptId
+        && incoming().isSeedData == false;
+      allow update: if isSignedIn()
+        && request.auth.token.email_verified == true
+        && isValidId(attemptId)
+        && isValidAttempt(incoming())
+        && incoming().id == existing().id
+        && incoming().school == existing().school
+        && incoming().phone == existing().phone
+        && incoming().email == existing().email
+        && incoming().submittedAt == existing().submittedAt
+        && incoming().totalScore == existing().totalScore
+        && incoming().isSeedData == false
+        && incoming().diff(existing()).affectedKeys().hasOnly(['syncedToDrive'])
+        && incoming().syncedToDrive == true;
+      allow delete: if false;
+    }
+
+    match /test/connection {
+      allow get: if request.time != null;
+      allow write: if false;
+    }
+  }
+}
