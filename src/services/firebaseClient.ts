@@ -1,6 +1,12 @@
 import { FirebaseApp, getApps, initializeApp } from 'firebase/app';
 import { Auth, getAuth } from 'firebase/auth';
-import { doc, Firestore, getDocFromServer, getFirestore } from 'firebase/firestore';
+import {
+  doc,
+  Firestore,
+  getDocFromServer,
+  getFirestore,
+  initializeFirestore,
+} from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 export const firebaseApp: FirebaseApp =
@@ -8,19 +14,28 @@ export const firebaseApp: FirebaseApp =
 
 export const firebaseAuth: Auth = getAuth(firebaseApp);
 
+function createFirestoreInstance(): Firestore {
+  try {
+    return initializeFirestore(
+      firebaseApp,
+      { experimentalAutoDetectLongPolling: true },
+      firebaseConfig.firestoreDatabaseId
+    );
+  } catch {
+    return getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+  }
+}
+
 // CRITICAL: Pass firebaseConfig.firestoreDatabaseId so the SDK targets the provisioned Enterprise Firestore instance
-export const firestoreDb: Firestore = getFirestore(
-  firebaseApp,
-  firebaseConfig.firestoreDatabaseId
-);
+export const firestoreDb: Firestore = createFirestoreInstance();
 
 export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
 export const FIRESTORE_DATABASE_ID = firebaseConfig.firestoreDatabaseId;
 
 let connectionTested = false;
 
-export async function testFirestoreConnection(): Promise<boolean> {
-  if (connectionTested) return true;
+export async function testFirestoreConnection(force = false): Promise<boolean> {
+  if (connectionTested && !force) return true;
   connectionTested = true;
   try {
     await getDocFromServer(doc(firestoreDb, 'test', 'connection'));

@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { SCHOOLS } from '../data/schools';
 import { AttemptRecord, LessonId } from '../types/exam';
+import { CloudSyncStatus, formatSyncTimeLabel } from '../services/syncReconciler';
 import { computeDashboardStats, ScoreTierFilter } from '../utils/analytics';
 import { exportDashboardToExcel } from '../utils/excelExport';
 
@@ -24,6 +25,11 @@ interface DashboardViewProps {
   onInspectAttempt: (attempt: AttemptRecord) => void;
   onRefreshData: () => void;
   isRefreshing?: boolean;
+  cloudSyncStatus?: CloudSyncStatus;
+  confirmedCloudCount?: number;
+  pendingCloudCount?: number;
+  lastCloudSyncAt?: number | null;
+  cloudErrorMessage?: string | null;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -31,6 +37,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onInspectAttempt,
   onRefreshData,
   isRefreshing = false,
+  cloudSyncStatus = 'synced',
+  confirmedCloudCount,
+  pendingCloudCount = 0,
+  lastCloudSyncAt = null,
+  cloudErrorMessage = null,
 }) => {
   const [scopeMode, setScopeMode] = useState<'province' | 'schools'>('province');
   const [selectedSchools, setSelectedSchools] = useState<string[]>([]);
@@ -131,10 +142,49 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
               Phạm vi: Chọn thống kê toàn tỉnh Vĩnh Long hoặc đánh dấu chọn từng trường để phát hiện lỗ hổng kiến thức.
             </p>
-            <p className="text-xs text-slate-500 mt-1 tabular-nums">
-              Tổng nhật ký làm bài đã đồng bộ đa thiết bị:{' '}
-              <strong className="text-blue-700">{attempts.length} lượt</strong>
-            </p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600 tabular-nums">
+              <span className="inline-flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className={`w-2 h-2 rounded-full ${
+                    cloudSyncStatus === 'error'
+                      ? 'bg-rose-600'
+                      : cloudSyncStatus === 'offline'
+                        ? 'bg-amber-500'
+                        : cloudSyncStatus === 'syncing' || isRefreshing
+                          ? 'bg-blue-600 animate-pulse'
+                          : pendingCloudCount > 0
+                            ? 'bg-amber-500'
+                            : 'bg-emerald-600'
+                  }`}
+                />
+                <span>
+                  Tổng nhật ký hiển thị:{' '}
+                  <strong className="text-blue-700">{attempts.length} lượt</strong>
+                </span>
+              </span>
+
+              <span className="text-slate-300 hidden sm:inline">|</span>
+
+              {cloudSyncStatus === 'offline' ? (
+                <span className="font-medium text-amber-800">
+                  Thiết bị đang ngoại tuyến · Sẽ tự đồng bộ Cloud khi có mạng
+                </span>
+              ) : cloudSyncStatus === 'error' ? (
+                <span className="font-medium text-rose-700">
+                  {cloudErrorMessage || 'Chưa kết nối được Cloud Firestore — Đang tự thử lại'}
+                </span>
+              ) : pendingCloudCount > 0 ? (
+                <span className="font-medium text-amber-800">
+                  Đã lên Cloud: {confirmedCloudCount ?? Math.max(0, attempts.length - pendingCloudCount)}/{attempts.length} lượt · Còn {pendingCloudCount} lượt trên máy đang chờ đẩy lên Cloud
+                </span>
+              ) : (
+                <span className="font-medium text-emerald-800">
+                  Đã đồng bộ trực tuyến Cloud Firestore ({confirmedCloudCount ?? attempts.length}/{attempts.length} lượt)
+                  {lastCloudSyncAt ? ` · Cập nhật ${formatSyncTimeLabel(lastCloudSyncAt)}` : ''}
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">

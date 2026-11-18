@@ -24,8 +24,9 @@ import { testFirestoreConnection } from './services/firebaseClient';
 import {
   fetchFirestoreAttempts,
   formatFirestoreUserMessage,
+  getConfirmedFirestoreIds,
   markAttemptSyncedToDriveInFirestore,
-  pushAttemptsToFirestore,
+  pushAttemptsToFirestoreDetailed,
   saveAttemptToFirestore,
   subscribeFirestoreAttempts,
 } from './services/firestoreSync';
@@ -42,6 +43,12 @@ import {
   saveAttempts,
   saveCandidate,
 } from './services/storage';
+import {
+  CloudSyncStatus,
+  computeCloudSyncSummary,
+  findAttemptsMissingOnRemote,
+  haveAttemptsChanged,
+} from './services/syncReconciler';
 import { AttemptRecord, GeneratedExam, StudentAnswers } from './types/exam';
 import { CandidateInfo, generateExam, gradeExam } from './utils/examEngine';
 
@@ -89,6 +96,14 @@ export default function App() {
   const [hasDriveToken, setHasDriveToken] = useState<boolean>(false);
   const [isSyncingDrive, setIsSyncingDrive] = useState<boolean>(false);
   const [isRefreshingCloud, setIsRefreshingCloud] = useState<boolean>(false);
+  const [confirmedCloudIds, setConfirmedCloudIds] = useState<Set<string>>(() => new Set());
+  const confirmedCloudIdsRef = useRef<Set<string>>(confirmedCloudIds);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<CloudSyncStatus>(() =>
+    typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'syncing'
+  );
+  const [cloudErrorMessage, setCloudErrorMessage] = useState<string | null>(null);
+  const [lastCloudSyncAt, setLastCloudSyncAt] = useState<number | null>(null);
+
   const [statusBanner, setStatusBanner] = useState<{
     tone: 'success' | 'error' | 'info';
     message: string;
@@ -97,6 +112,9 @@ export default function App() {
 
   const cloudSyncInFlightRef = useRef<boolean>(false);
   const lastCloudSyncAtRef = useRef<number>(0);
+  const snapshotHealthyRef = useRef<boolean>(false);
+  const activeTabRef = useRef<AppTab>(activeTab);
+  activeTabRef.current = activeTab;
 
   const commitAttempts = useCallback((next: AttemptRecord[], broadcast = false) => {
     attemptsRef.current = next;
@@ -107,6 +125,21 @@ export default function App() {
     }
   }, []);
 
+  const addConfirmedCloudIds = useCallback((ids: Iterable<string>) => {
+    let added = false;
+    const next = new Set(confirmedCloudIdsRef.current);
+    for (const id of ids) {
+      if (id && !next.has(id)) {
+        next.add(id);
+        added = true;
+      }
+    }
+    if (added) {
+      confirmedCloudIdsRef.current = next;
+      setConfirmedCloudIds(next);
+    }
+  }, []);
+
   const showBanner = useCallback(
     (tone: 'success' | 'error' | 'info', message: string) => {
       setStatusBanner({ tone, message });
@@ -114,15 +147,25 @@ export default function App() {
     []
   );
 
-  // Đồng bộ 2 chiều với Cloud Firestore (hoạt động đa thiết bị trên mọi tên miền/GitHub Pages) + Express backend dự phòng nếu có
+  // Đồng bộ 2 chiều trực tiếp với máy chủ Cloud Firestore (đa thiết bị trên mọi tên miền) + Express backend dự phòng nếu có
   const syncWithCloud = useCallback(
     async (opts?: { silent?: boolean; force?: boolean }) => {
       const now = Date.now();
       if (cloudSyncInFlightRef.current) return false;
       if (!opts?.force && now - lastCloudSyncAtRef.current < 800) return false;
 
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        setCloudSyncStatus('offline');
+        setCloudErrorMessage('Thiết bị đang ngoại tuyến. Sẽ tự động đồng bộ lại khi có kết nối mạng.');
+        if (!opts?.silent) {
+          showBanner('info', 'Thiết bị đang ngoại tuyến. Kết quả được lưu an toàn trên máy và sẽ tự động đồng bộ khi có mạng.');
+        }
+        return false;
+      }
+
       cloudSyncInFlightRef.current = true;
       lastCloudSyncAtRef.current = now;
+      setCloudSyncStatus('syncing');
       if (!opts?.silent) setIsRefreshingCloud(true);
 
       try {
@@ -136,10 +179,6 @@ export default function App() {
         const serverAttempts =
           serverResult.status === 'fulfilled' ? serverResult.value : null;
 
-        if (firestoreResult.status === 'rejected' && serverAttempts === null) {
-          throw firestoreResult.reason;
-        }
-
         const currentLocal = attemptsRef.current;
         let merged = currentLocal;
         if (firestoreAttempts) {
@@ -149,15 +188,35 @@ export default function App() {
           merged = mergeAttempts(merged, serverAttempts);
         }
 
-        // Đẩy lên Cloud Firestore những lượt thi thực tế có trên máy/server nhưng chưa có trên Firestore
-        if (firestoreAttempts) {
-          const firestoreById = new Set(firestoreAttempts.map((a) => a.id));
-          const missingOnFirestore = merged.filter(
-            (a) => !a.isSeedData && !firestoreById.has(a.id)
-          );
-          if (missingOnFirestore.length > 0) {
-            await pushAttemptsToFirestore(missingOnFirestore).catch(() => 0);
+        // Nếu đọc Cloud Firestore thất bại: KHÔNG bao giờ giả lập thành công bằng server cục bộ
+        if (firestoreResult.status === 'rejected') {
+          if (haveAttemptsChanged(currentLocal, merged)) {
+            commitAttempts(merged, false);
           }
+          const errMsg = formatFirestoreUserMessage(firestoreResult.reason);
+          setCloudSyncStatus(
+            typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'error'
+          );
+          setCloudErrorMessage(errMsg);
+          if (!opts?.silent) {
+            showBanner('error', errMsg);
+          }
+          return false;
+        }
+
+        const remoteIds = new Set((firestoreAttempts ?? []).map((a) => a.id));
+        addConfirmedCloudIds(remoteIds);
+
+        // Đẩy lên Cloud Firestore mọi lượt thi thực tế trên máy/server chưa có trên Cloud
+        const missingOnFirestore = findAttemptsMissingOnRemote(merged, remoteIds);
+        let pushFailedCount = 0;
+        let pushFirstError: unknown = null;
+
+        if (missingOnFirestore.length > 0) {
+          const pushRes = await pushAttemptsToFirestoreDetailed(missingOnFirestore);
+          addConfirmedCloudIds([...pushRes.pushedIds, ...pushRes.alreadyRemoteIds]);
+          pushFailedCount = pushRes.failed.length;
+          pushFirstError = pushRes.failed[0]?.error ?? null;
         }
 
         // Nếu có Express backend cục bộ, đồng bộ thêm qua /api/attempts
@@ -176,29 +235,40 @@ export default function App() {
           }
         }
 
-        const changed =
-          merged.length !== currentLocal.length ||
-          merged.some(
-            (m, idx) =>
-              m.id !== currentLocal[idx]?.id ||
-              Boolean(m.syncedToDrive) !== Boolean(currentLocal[idx]?.syncedToDrive)
-          );
-
-        if (changed) {
+        if (haveAttemptsChanged(currentLocal, merged)) {
           commitAttempts(merged, false);
         }
+
+        if (pushFailedCount > 0) {
+          const errMsg = `${formatFirestoreUserMessage(pushFirstError)} (Còn ${pushFailedCount} lượt thi chưa lên Cloud.)`;
+          setCloudSyncStatus('error');
+          setCloudErrorMessage(errMsg);
+          if (!opts?.silent) {
+            showBanner('error', errMsg);
+          }
+          return false;
+        }
+
+        setCloudSyncStatus('synced');
+        setCloudErrorMessage(null);
+        setLastCloudSyncAt(Date.now());
 
         if (!opts?.silent) {
           const realCount = merged.filter((a) => !a.isSeedData).length;
           showBanner(
             'success',
-            `Đã cập nhật dữ liệu mới nhất (${realCount} lượt thi thực tế đã đồng bộ đa thiết bị).`
+            `Đã đồng bộ trực tuyến Cloud Firestore (${realCount} lượt thi trên toàn hệ thống).`
           );
         }
         return true;
       } catch (err) {
+        const errMsg = formatFirestoreUserMessage(err);
+        setCloudSyncStatus(
+          typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'error'
+        );
+        setCloudErrorMessage(errMsg);
         if (!opts?.silent) {
-          showBanner('error', formatFirestoreUserMessage(err));
+          showBanner('error', errMsg);
         }
         return false;
       } finally {
@@ -206,7 +276,7 @@ export default function App() {
         if (!opts?.silent) setIsRefreshingCloud(false);
       }
     },
-    [commitAttempts, showBanner]
+    [addConfirmedCloudIds, commitAttempts, showBanner]
   );
 
   // Theo dõi trạng thái Firebase Auth
@@ -218,32 +288,75 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Kiểm tra kết nối Firestore, đồng bộ lần đầu, lắng nghe onSnapshot thời gian thực đa thiết bị + SSE/tab cùng trình duyệt
+  // Kiểm tra kết nối Firestore, đồng bộ lần đầu, lắng nghe onSnapshot thời gian thực có tự phục hồi,
+  // tự động đẩy lại bài chưa lên Cloud khi có mạng & đồng bộ nền định kỳ trên Dashboard
   useEffect(() => {
-    void testFirestoreConnection();
-    void syncWithCloud({ silent: true, force: true });
+    let unmounted = false;
+    let unsubscribeFirestore: (() => void) | null = null;
+    let reconnectTimer: number | null = null;
+    let reconnectAttempt = 0;
 
-    const unsubscribeFirestore = subscribeFirestoreAttempts(
-      (remoteAttempts) => {
-        const currentLocal = attemptsRef.current;
-        const merged = mergeAttempts(currentLocal, remoteAttempts);
-        const changed =
-          merged.length !== currentLocal.length ||
-          merged.some(
-            (m, idx) =>
-              m.id !== currentLocal[idx]?.id ||
-              Boolean(m.syncedToDrive) !== Boolean(currentLocal[idx]?.syncedToDrive)
-          );
-        if (changed) {
-          commitAttempts(merged, false);
-        }
-      },
-      (error) => {
-        if (error.message.includes('Quota exceeded')) {
-          showBanner('error', formatFirestoreUserMessage(error));
-        }
+    const startFirestoreListener = () => {
+      if (unmounted) return;
+      if (unsubscribeFirestore) {
+        unsubscribeFirestore();
+        unsubscribeFirestore = null;
       }
-    );
+
+      unsubscribeFirestore = subscribeFirestoreAttempts(
+        (update) => {
+          if (unmounted) return;
+          reconnectAttempt = 0;
+          if (!update.fromCache) {
+            snapshotHealthyRef.current = true;
+            addConfirmedCloudIds(update.confirmedServerIds);
+            setLastCloudSyncAt(Date.now());
+            setCloudErrorMessage(null);
+            setCloudSyncStatus('synced');
+          }
+
+          const currentLocal = attemptsRef.current;
+          const merged = mergeAttempts(currentLocal, update.attempts);
+          if (haveAttemptsChanged(currentLocal, merged)) {
+            commitAttempts(merged, false);
+          }
+
+          // Nếu có lượt thi trên máy chưa nằm trong snapshot đã xác nhận từ server -> tự động đẩy lên
+          if (!update.fromCache) {
+            const missing = findAttemptsMissingOnRemote(merged, getConfirmedFirestoreIds());
+            if (missing.length > 0 && !cloudSyncInFlightRef.current) {
+              void syncWithCloud({ silent: true, force: true });
+            }
+          }
+        },
+        (error) => {
+          if (unmounted) return;
+          snapshotHealthyRef.current = false;
+          const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+          setCloudSyncStatus(isOffline ? 'offline' : 'error');
+          setCloudErrorMessage(formatFirestoreUserMessage(error));
+          if (error.message.includes('Quota exceeded')) {
+            showBanner('error', formatFirestoreUserMessage(error));
+            return;
+          }
+          // Tự động kết nối lại luồng thời gian thực với backoff tăng dần
+          const delayMs = Math.min(30000, 3000 * Math.pow(2, reconnectAttempt));
+          reconnectAttempt += 1;
+          if (reconnectTimer !== null) {
+            window.clearTimeout(reconnectTimer);
+          }
+          reconnectTimer = window.setTimeout(() => {
+            if (!unmounted && navigator.onLine !== false) {
+              startFirestoreListener();
+            }
+          }, delayMs);
+        }
+      );
+    };
+
+    void testFirestoreConnection(true);
+    void syncWithCloud({ silent: true, force: true });
+    startFirestoreListener();
 
     const unsubscribeStream = subscribeServerAttemptStream(() => {
       void syncWithCloud({ silent: true, force: true });
@@ -285,21 +398,74 @@ export default function App() {
       }
     };
 
+    const handleOnline = () => {
+      void testFirestoreConnection(true);
+      startFirestoreListener();
+      void syncWithCloud({ silent: true, force: true });
+    };
+
+    const handleOffline = () => {
+      snapshotHealthyRef.current = false;
+      setCloudSyncStatus('offline');
+      setCloudErrorMessage('Thiết bị đang ngoại tuyến. Sẽ tự động đồng bộ lại khi có mạng.');
+    };
+
+    // Đồng bộ định kỳ tự động:
+    // - Thử đẩy lại mỗi 10s nếu còn bài trên máy chưa lên Cloud
+    // - Đối chiếu trực tiếp với máy chủ Firestore mỗi 15s (khi luồng realtime gián đoạn) hoặc 30s trên Dashboard
+    let lastPeriodicAt = Date.now();
+    const backgroundSyncInterval = window.setInterval(() => {
+      if (unmounted || document.visibilityState !== 'visible') return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+      const missing = findAttemptsMissingOnRemote(
+        attemptsRef.current,
+        confirmedCloudIdsRef.current
+      );
+      const elapsed = Date.now() - lastPeriodicAt;
+
+      if (missing.length > 0 && elapsed >= 10000) {
+        lastPeriodicAt = Date.now();
+        void syncWithCloud({ silent: true, force: true });
+        return;
+      }
+
+      if (activeTabRef.current === 'dashboard') {
+        const threshold = snapshotHealthyRef.current ? 30000 : 15000;
+        if (elapsed >= threshold) {
+          lastPeriodicAt = Date.now();
+          void syncWithCloud({ silent: true });
+        }
+      }
+    }, 5000);
+
     window.addEventListener('storage', handleStorage);
     window.addEventListener('focus', handleFocusOrVisible);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
     document.addEventListener('visibilitychange', handleFocusOrVisible);
 
     return () => {
-      unsubscribeFirestore();
+      unmounted = true;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      window.clearInterval(backgroundSyncInterval);
+      if (unsubscribeFirestore) unsubscribeFirestore();
       unsubscribeStream();
       window.removeEventListener('storage', handleStorage);
       window.removeEventListener('focus', handleFocusOrVisible);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
       document.removeEventListener('visibilitychange', handleFocusOrVisible);
       if (channel) {
         channel.close();
       }
     };
-  }, [commitAttempts, showBanner, syncWithCloud]);
+  }, [addConfirmedCloudIds, commitAttempts, showBanner, syncWithCloud]);
+
+  const cloudSyncSummary = useMemo(
+    () => computeCloudSyncSummary(attempts, confirmedCloudIds),
+    [attempts, confirmedCloudIds]
+  );
 
   const selectedAttempt = useMemo(
     () => attempts.find((a) => a.id === selectedAttemptId) ?? null,
@@ -344,7 +510,8 @@ export default function App() {
 
         const realMerged = merged.filter((a) => !a.isSeedData);
         if (realMerged.length > 0) {
-          await pushAttemptsToFirestore(realMerged).catch(() => 0);
+          const pushRes = await pushAttemptsToFirestoreDetailed(realMerged);
+          addConfirmedCloudIds([...pushRes.pushedIds, ...pushRes.alreadyRemoteIds]);
           for (const id of uploadedSet) {
             await markAttemptSyncedToDriveInFirestore(id).catch(() => false);
           }
@@ -371,7 +538,7 @@ export default function App() {
         setIsSyncingDrive(false);
       }
     },
-    [commitAttempts, showBanner, syncWithCloud]
+    [addConfirmedCloudIds, commitAttempts, showBanner, syncWithCloud]
   );
 
   const handleSyncFromDrive = useCallback(async () => {
@@ -446,7 +613,12 @@ export default function App() {
           a.id === attempt.id ? { ...a, syncedToDrive: true } : a
         );
         commitAttempts(updated, true);
-        await saveAttemptToFirestore({ ...attempt, syncedToDrive: true }).catch(() => false);
+        const saved = await saveAttemptToFirestore({ ...attempt, syncedToDrive: true })
+          .then(() => true)
+          .catch(() => false);
+        if (saved) {
+          addConfirmedCloudIds([attempt.id]);
+        }
         await markAttemptSyncedToDriveInFirestore(attempt.id).catch(() => false);
         await pushAttemptsToServer([{ ...attempt, syncedToDrive: true }]).catch(() => null);
         showBanner('success', `Đã lưu bài thi ${attempt.id} lên thư mục Google Drive.`);
@@ -459,7 +631,7 @@ export default function App() {
         setIsSyncingDrive(false);
       }
     },
-    [commitAttempts, showBanner]
+    [addConfirmedCloudIds, commitAttempts, showBanner]
   );
 
   // Đồng bộ tệp tổng hợp trên Google Drive (có bước xác nhận rõ ràng nếu ghi đè tệp)
@@ -501,7 +673,8 @@ export default function App() {
             );
             commitAttempts(next, true);
             const realList = next.filter((a) => !a.isSeedData);
-            await pushAttemptsToFirestore(realList).catch(() => 0);
+            const pushRes = await pushAttemptsToFirestoreDetailed(realList);
+            addConfirmedCloudIds([...pushRes.pushedIds, ...pushRes.alreadyRemoteIds]);
             for (const att of realList) {
               await markAttemptSyncedToDriveInFirestore(att.id).catch(() => false);
             }
@@ -578,23 +751,30 @@ export default function App() {
       setExamMode('result');
       window.scrollTo({ top: 0, behavior: 'smooth' });
 
-      // Đẩy ngay lên Cloud Firestore (& Express backend nếu có) để mọi thiết bị nhận kết quả tức thời
-      let syncedToCloud = false;
+      // Đẩy ngay lên Cloud Firestore để mọi thiết bị nhận kết quả tức thời
+      let syncedToFirestore = false;
+      let firestoreErrorText: string | null = null;
       try {
         await saveAttemptToFirestore(graded);
-        syncedToCloud = true;
+        syncedToFirestore = true;
+        addConfirmedCloudIds([graded.id]);
+        setLastCloudSyncAt(Date.now());
+        setCloudSyncStatus('synced');
+        setCloudErrorMessage(null);
       } catch (err) {
-        if (err instanceof Error && err.message.includes('Quota exceeded')) {
-          showBanner('error', formatFirestoreUserMessage(err));
-        }
+        firestoreErrorText = formatFirestoreUserMessage(err);
+        setCloudSyncStatus(
+          typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'error'
+        );
+        setCloudErrorMessage(firestoreErrorText);
       }
 
+      // Đồng bộ bổ sung với Express backend cục bộ nếu có (không thay thế trạng thái Cloud Firestore)
       try {
         const serverList = await pushAttemptsToServer([graded]);
         if (serverList) {
           const reconciled = mergeAttempts(attemptsRef.current, serverList);
           commitAttempts(reconciled, true);
-          syncedToCloud = true;
         }
       } catch {
         // Không có server cục bộ cũng không sao vì Cloud Firestore là kênh đồng bộ chính
@@ -612,26 +792,33 @@ export default function App() {
           await markAttemptSyncedToDriveInFirestore(graded.id).catch(() => false);
           await pushAttemptsToServer([{ ...graded, syncedToDrive: true }]).catch(() => null);
           showBanner(
-            'success',
-            `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10) và tự động lưu kết quả lên Google Drive & đồng bộ các thiết bị.`
+            syncedToFirestore ? 'success' : 'info',
+            syncedToFirestore
+              ? `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10) và tự động lưu lên Google Drive & đồng bộ trực tuyến các thiết bị.`
+              : `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10) và lưu lên Google Drive, nhưng chưa đồng bộ được Cloud Firestore.`
           );
         } catch {
           showBanner(
             'info',
-            `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10)${syncedToCloud ? ' và đồng bộ đa thiết bị' : ''}. Nhấn "Lưu bài này lên Google Drive" để đồng bộ lên Drive.`
+            `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10)${syncedToFirestore ? ' và đồng bộ Cloud đa thiết bị' : ' (đang chờ đồng bộ Cloud)'}. Nhấn "Lưu bài này lên Google Drive" để đồng bộ lên Drive.`
           );
           setHasDriveToken(Boolean(getCachedDriveToken()));
         } finally {
           setIsSyncingDrive(false);
         }
-      } else if (syncedToCloud) {
+      } else if (syncedToFirestore) {
         showBanner(
           'success',
-          `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10) và đồng bộ kết quả lên hệ thống đa thiết bị.`
+          `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10) và đồng bộ trực tuyến lên Cloud đa thiết bị.`
+        );
+      } else {
+        showBanner(
+          'error',
+          `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10) và lưu trên thiết bị, nhưng chưa đẩy được lên Cloud: ${firestoreErrorText ?? 'Lỗi mạng'}`
         );
       }
     },
-    [commitAttempts, currentExam, showBanner]
+    [addConfirmedCloudIds, commitAttempts, currentExam, showBanner]
   );
 
   const handleTabSwitch = (nextTab: AppTab) => {
@@ -732,6 +919,7 @@ export default function App() {
               attempt={selectedAttempt}
               studentHistory={studentHistory}
               isNewlyGeneratedSbd={isNewlyGeneratedSbd}
+              isConfirmedOnCloud={confirmedCloudIds.has(selectedAttempt.id)}
               canSyncDrive={hasDriveToken}
               isSyncingDrive={isSyncingDrive}
               onSelectHistoryAttempt={(att) => {
@@ -766,6 +954,11 @@ export default function App() {
             onInspectAttempt={handleReviewAttempt}
             onRefreshData={handleRefreshDashboard}
             isRefreshing={isRefreshingCloud || isSyncingDrive}
+            cloudSyncStatus={cloudSyncStatus}
+            confirmedCloudCount={cloudSyncSummary.confirmedCount}
+            pendingCloudCount={cloudSyncSummary.pendingCount}
+            lastCloudSyncAt={lastCloudSyncAt}
+            cloudErrorMessage={cloudErrorMessage}
           />
         )}
       </main>

@@ -1,8 +1,8 @@
 import {
   collection,
   doc,
-  getDoc,
-  getDocs,
+  getDocFromServer,
+  getDocsFromServer,
   onSnapshot,
   query,
   setDoc,
@@ -85,12 +85,22 @@ export function formatFirestoreUserMessage(err: unknown): string {
   if (raw.includes('Quota exceeded')) {
     return `Đã vượt hạn mức đọc/ghi miễn phí trong ngày của Firestore (đặt lại vào ngày mai). Xem chi tiết tại: https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/firestore/databases/${FIRESTORE_DATABASE_ID}/data?openUpgradeDialog=true`;
   }
-  return 'Không thể đồng bộ dữ liệu trực tuyến với Firestore. Vui lòng kiểm tra kết nối mạng và thử lại.';
+  if (raw.includes('client is offline') || raw.includes('unavailable')) {
+    return 'Thiết bị đang ngoại tuyến hoặc kết nối tới Cloud Firestore bị gián đoạn. Hệ thống sẽ tự động đồng bộ lại khi có mạng.';
+  }
+  if (raw.includes('Missing or insufficient permissions')) {
+    return 'Không có quyền ghi dữ liệu lên Cloud Firestore hoặc định dạng bài thi chưa hợp lệ.';
+  }
+  return 'Không thể đồng bộ dữ liệu trực tuyến với Cloud Firestore. Vui lòng kiểm tra kết nối mạng và thử lại.';
 }
 
-// Theo dõi các ID đã xác nhận có trên Firestore để tránh ghi trùng lặp
+// Theo dõi các ID đã xác nhận thực sự có trên máy chủ Firestore (không tính cache cục bộ chưa ghi)
 const knownRemoteIds = new Set<string>();
 const knownSyncedToDriveIds = new Set<string>();
+
+export function getConfirmedFirestoreIds(): Set<string> {
+  return new Set(knownRemoteIds);
+}
 
 function parseSnapshotDoc(raw: unknown): AttemptRecord | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -114,30 +124,38 @@ function parseSnapshotDoc(raw: unknown): AttemptRecord | null {
   };
 }
 
-function recordKnownDocs(list: readonly AttemptRecord[]): void {
-  for (const item of list) {
-    knownRemoteIds.add(item.id);
-    if (item.syncedToDrive) {
-      knownSyncedToDriveIds.add(item.id);
-    }
+function recordConfirmedDoc(item: AttemptRecord): void {
+  knownRemoteIds.add(item.id);
+  if (item.syncedToDrive) {
+    knownSyncedToDriveIds.add(item.id);
   }
 }
 
+export interface FirestoreSnapshotUpdate {
+  attempts: AttemptRecord[];
+  fromCache: boolean;
+  hasPendingWrites: boolean;
+  confirmedServerIds: Set<string>;
+}
+
+/**
+ * Đọc trực tiếp toàn bộ bài thi từ máy chủ Cloud Firestore (bỏ qua cache cục bộ để luôn lấy dữ liệu mới nhất).
+ */
 export async function fetchFirestoreAttempts(): Promise<AttemptRecord[]> {
   try {
     const q = query(
       collection(firestoreDb, ATTEMPTS_COLLECTION),
       where('isSeedData', '==', false)
     );
-    const snap = await getDocs(q);
+    const snap = await getDocsFromServer(q);
     const items: AttemptRecord[] = [];
     snap.forEach((docSnap) => {
       const parsed = parseSnapshotDoc(docSnap.data());
       if (parsed) {
         items.push(parsed);
+        recordConfirmedDoc(parsed);
       }
     });
-    recordKnownDocs(items);
     return items.sort(
       (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
     );
@@ -146,8 +164,11 @@ export async function fetchFirestoreAttempts(): Promise<AttemptRecord[]> {
   }
 }
 
+/**
+ * Lắng nghe thay đổi thời gian thực từ Cloud Firestore, phân biệt dữ liệu đã xác nhận trên máy chủ vs cache cục bộ.
+ */
 export function subscribeFirestoreAttempts(
-  onAttempts: (attempts: AttemptRecord[]) => void,
+  onUpdate: (update: FirestoreSnapshotUpdate) => void,
   onError?: (error: Error) => void
 ): () => void {
   const q = query(
@@ -156,19 +177,30 @@ export function subscribeFirestoreAttempts(
   );
   return onSnapshot(
     q,
+    { includeMetadataChanges: true },
     (snap) => {
       const items: AttemptRecord[] = [];
+      const confirmedIdsInSnap = new Set<string>();
       snap.forEach((docSnap) => {
         const parsed = parseSnapshotDoc(docSnap.data());
-        if (parsed) {
-          items.push(parsed);
+        if (!parsed) return;
+        items.push(parsed);
+        const isServerConfirmed =
+          !snap.metadata.fromCache && !docSnap.metadata.hasPendingWrites;
+        if (isServerConfirmed) {
+          recordConfirmedDoc(parsed);
+          confirmedIdsInSnap.add(parsed.id);
         }
       });
-      recordKnownDocs(items);
       items.sort(
         (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
       );
-      onAttempts(items);
+      onUpdate({
+        attempts: items,
+        fromCache: snap.metadata.fromCache,
+        hasPendingWrites: snap.metadata.hasPendingWrites,
+        confirmedServerIds: confirmedIdsInSnap,
+      });
     },
     (error) => {
       try {
@@ -193,6 +225,7 @@ export async function markAttemptSyncedToDriveInFirestore(attemptId: string): Pr
     await updateDoc(doc(firestoreDb, ATTEMPTS_COLLECTION, safeId), {
       syncedToDrive: true,
     });
+    knownRemoteIds.add(safeId);
     knownSyncedToDriveIds.add(safeId);
     return true;
   } catch (error) {
@@ -218,40 +251,67 @@ export async function saveAttemptToFirestore(attempt: AttemptRecord): Promise<bo
   }
 
   try {
-    const existing = await getDoc(docRef);
-    if (existing.exists()) {
-      knownRemoteIds.add(payload.id);
-      if (existing.data()?.syncedToDrive) {
-        knownSyncedToDriveIds.add(payload.id);
-      } else if (payload.syncedToDrive && firebaseAuth.currentUser?.emailVerified) {
-        return markAttemptSyncedToDriveInFirestore(payload.id);
+    await setDoc(docRef, payload);
+    recordConfirmedDoc(payload);
+    return true;
+  } catch (createError) {
+    // Nếu thất bại do bản ghi đã tồn tại trên máy chủ Firestore (allow update yêu cầu đăng nhập),
+    // kiểm tra trực tiếp trên máy chủ để xác nhận đồng bộ thay vì báo lỗi giả.
+    try {
+      const existing = await getDocFromServer(docRef);
+      if (existing.exists()) {
+        knownRemoteIds.add(payload.id);
+        if (existing.data()?.syncedToDrive) {
+          knownSyncedToDriveIds.add(payload.id);
+        } else if (payload.syncedToDrive && firebaseAuth.currentUser?.emailVerified) {
+          return markAttemptSyncedToDriveInFirestore(payload.id);
+        }
+        return false;
       }
-      return false;
+    } catch {
+      // Bỏ qua lỗi kiểm tra phụ, ném lại lỗi ghi gốc bên dưới
     }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, path);
+    handleFirestoreError(createError, OperationType.CREATE, path);
+  }
+}
+
+export interface BatchPushResult {
+  pushedIds: string[];
+  alreadyRemoteIds: string[];
+  failed: Array<{ id: string; error: unknown }>;
+}
+
+/**
+ * Đẩy từng lượt thi lên Cloud Firestore độc lập: một bản ghi lỗi không làm gián đoạn các bản ghi khác.
+ */
+export async function pushAttemptsToFirestoreDetailed(
+  attempts: readonly AttemptRecord[],
+  saver: (attempt: AttemptRecord) => Promise<boolean> = saveAttemptToFirestore
+): Promise<BatchPushResult> {
+  const realAttempts = attempts.filter((a) => !a.isSeedData);
+  const pushedIds: string[] = [];
+  const alreadyRemoteIds: string[] = [];
+  const failed: Array<{ id: string; error: unknown }> = [];
+
+  for (const att of realAttempts) {
+    try {
+      const wrote = await saver(att);
+      if (wrote) {
+        pushedIds.push(att.id);
+      } else {
+        alreadyRemoteIds.push(att.id);
+      }
+    } catch (error) {
+      failed.push({ id: att.id, error });
+    }
   }
 
-  try {
-    await setDoc(docRef, payload);
-    knownRemoteIds.add(payload.id);
-    if (payload.syncedToDrive) {
-      knownSyncedToDriveIds.add(payload.id);
-    }
-    return true;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, path);
-  }
+  return { pushedIds, alreadyRemoteIds, failed };
 }
 
 export async function pushAttemptsToFirestore(
   attempts: readonly AttemptRecord[]
 ): Promise<number> {
-  const realAttempts = attempts.filter((a) => !a.isSeedData);
-  let pushed = 0;
-  for (const att of realAttempts) {
-    const wrote = await saveAttemptToFirestore(att);
-    if (wrote) pushed += 1;
-  }
-  return pushed;
+  const res = await pushAttemptsToFirestoreDetailed(attempts);
+  return res.pushedIds.length;
 }

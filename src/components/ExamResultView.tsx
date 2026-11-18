@@ -23,6 +23,7 @@ interface ExamResultViewProps {
   attempt: AttemptRecord;
   studentHistory: AttemptRecord[];
   isNewlyGeneratedSbd?: boolean;
+  isConfirmedOnCloud?: boolean;
   canSyncDrive: boolean;
   isSyncingDrive: boolean;
   onSelectHistoryAttempt: (attempt: AttemptRecord) => void;
@@ -42,6 +43,7 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
   attempt,
   studentHistory,
   isNewlyGeneratedSbd = false,
+  isConfirmedOnCloud = false,
   canSyncDrive,
   isSyncingDrive,
   onSelectHistoryAttempt,
@@ -248,13 +250,27 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
               <p className="mt-0.5 font-semibold text-xs sm:text-sm flex items-center gap-1">
                 <Cloud
                   className={`w-3.5 h-3.5 ${
-                    attempt.syncedToDrive ? 'text-emerald-700' : 'text-blue-600'
+                    attempt.syncedToDrive
+                      ? 'text-emerald-700'
+                      : isConfirmedOnCloud
+                        ? 'text-blue-700'
+                        : 'text-amber-600'
                   }`}
                 />
-                <span className={attempt.syncedToDrive ? 'text-emerald-800' : 'text-slate-700'}>
+                <span
+                  className={
+                    attempt.syncedToDrive
+                      ? 'text-emerald-800'
+                      : isConfirmedOnCloud
+                        ? 'text-blue-800'
+                        : 'text-amber-800'
+                  }
+                >
                   {attempt.syncedToDrive
-                    ? 'Đã lưu Google Drive'
-                    : 'Đã đồng bộ máy chủ · Chưa lên Drive'}
+                    ? 'Đã lưu Drive & Cloud đa thiết bị'
+                    : isConfirmedOnCloud
+                      ? 'Đã đồng bộ Cloud đa thiết bị'
+                      : 'Lưu trên máy · Đang chờ đồng bộ Cloud'}
                 </span>
               </p>
             </div>

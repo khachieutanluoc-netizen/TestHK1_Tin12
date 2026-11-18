@@ -71,11 +71,11 @@ export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
 
   const myAndDeviceAttempts = useMemo(() => {
     if (historyScope === 'device') {
-      return attempts.slice(0, 20);
+      return attempts.slice(0, 50);
     }
 
     if (isValidSbdFormat(normalizedInputSbd)) {
-      return matchedAttemptsBySbd.slice(0, 20);
+      return matchedAttemptsBySbd.slice(0, 50);
     }
     return [];
   }, [attempts, historyScope, matchedAttemptsBySbd, normalizedInputSbd]);
