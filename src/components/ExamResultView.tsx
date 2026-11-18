@@ -22,6 +22,7 @@ interface ExamResultViewProps {
   isSyncingDrive: boolean;
   onSelectHistoryAttempt: (attempt: AttemptRecord) => void;
   onUploadSingleAttemptToDrive: (attempt: AttemptRecord) => void;
+  onSignInAndUploadDrive: (attempt: AttemptRecord) => void;
   onStartNewExam: () => void;
   onBackToSetup: () => void;
 }
@@ -39,6 +40,7 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
   isSyncingDrive,
   onSelectHistoryAttempt,
   onUploadSingleAttemptToDrive,
+  onSignInAndUploadDrive,
   onStartNewExam,
   onBackToSetup,
 }) => {
@@ -68,15 +70,23 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
         </button>
 
         <div className="flex flex-wrap items-center gap-2.5">
-          {!attempt.syncedToDrive && canSyncDrive && (
+          {!attempt.syncedToDrive && !attempt.isSeedData && (
             <button
               type="button"
-              onClick={() => onUploadSingleAttemptToDrive(attempt)}
+              onClick={() =>
+                canSyncDrive
+                  ? onUploadSingleAttemptToDrive(attempt)
+                  : onSignInAndUploadDrive(attempt)
+              }
               disabled={isSyncingDrive}
               className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors cursor-pointer disabled:opacity-60"
             >
               <CloudUpload className="w-4 h-4" />
-              <span>Lưu bài này lên Google Drive</span>
+              <span>
+                {canSyncDrive
+                  ? 'Lưu bài này lên Google Drive'
+                  : 'Kết nối & Lưu lên Google Drive'}
+              </span>
             </button>
           )}
           <button
@@ -157,15 +167,17 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
               </p>
             </div>
             <div className="p-3 rounded-lg bg-slate-50 border border-slate-200/80">
-              <p className="text-xs text-slate-500">Đồng bộ đám mây</p>
+              <p className="text-xs text-slate-500">Lưu trữ &amp; Đồng bộ</p>
               <p className="mt-0.5 font-semibold text-xs sm:text-sm flex items-center gap-1">
                 <Cloud
                   className={`w-3.5 h-3.5 ${
-                    attempt.syncedToDrive ? 'text-emerald-700' : 'text-slate-400'
+                    attempt.syncedToDrive ? 'text-emerald-700' : 'text-blue-600'
                   }`}
                 />
-                <span className={attempt.syncedToDrive ? 'text-emerald-800' : 'text-slate-600'}>
-                  {attempt.syncedToDrive ? 'Đã lưu Google Drive' : 'Đã lưu trên thiết bị'}
+                <span className={attempt.syncedToDrive ? 'text-emerald-800' : 'text-slate-700'}>
+                  {attempt.syncedToDrive
+                    ? 'Đã lưu Google Drive'
+                    : 'Đã đồng bộ máy chủ · Chưa lên Drive'}
                 </span>
               </p>
             </div>

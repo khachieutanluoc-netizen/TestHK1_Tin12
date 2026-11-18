@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ALL_D1_QUESTIONS, ALL_D2_QUESTIONS } from '../data/questionBank';
 import { SCHOOLS } from '../data/schools';
+import { mergeAttempts } from '../services/storage';
 import { AttemptRecord } from '../types/exam';
 import { computeDashboardStats } from './analytics';
 import { createEmptyAnswers, generateExam, gradeExam } from './examEngine';
@@ -121,4 +122,59 @@ test('computeDashboardStats ranks students by average score descending across mu
     tierFiltered.filteredRankings.map((r) => r.email),
     ['c@vl.edu.vn']
   );
+
+  // School summaries verification
+  assert.equal(allStats.schoolSummaries.length, 2);
+  const school0Summary = allStats.schoolSummaries.find((s) => s.school === SCHOOLS[0]);
+  const school1Summary = allStats.schoolSummaries.find((s) => s.school === SCHOOLS[1]);
+  assert.ok(school0Summary);
+  assert.ok(school1Summary);
+  assert.equal(school0Summary.studentCount, 1);
+  assert.equal(school0Summary.attemptCount, 2);
+  assert.equal(school0Summary.avgScore, 8.5);
+  assert.equal(school1Summary.studentCount, 2);
+  assert.equal(school1Summary.attemptCount, 2);
+  assert.equal(school1Summary.avgScore, 7.38);
 });
+
+test('mergeAttempts reconciles cross-device attempts, preserves syncedToDrive flags, and sorts newest first', () => {
+  const localAttempt = makeAttempt({
+    id: 'DEV1-01',
+    school: SCHOOLS[0],
+    phone: '0911111111',
+    email: 'dev1@vl.edu.vn',
+    submittedAt: '2026-10-20T08:00:00Z',
+    totalScore: 8.25,
+    lessonAccuracies: { 1: 100 },
+  });
+  localAttempt.syncedToDrive = false;
+  localAttempt.isSeedData = false;
+
+  const remoteDuplicateSynced: AttemptRecord = {
+    ...localAttempt,
+    syncedToDrive: true,
+    isSeedData: false,
+  };
+
+  const remoteFromDevice2 = makeAttempt({
+    id: 'DEV2-01',
+    school: SCHOOLS[2],
+    phone: '0922222222',
+    email: 'dev2@vl.edu.vn',
+    submittedAt: '2026-10-20T09:30:00Z',
+    totalScore: 9.5,
+    lessonAccuracies: { 1: 95 },
+  });
+  remoteFromDevice2.syncedToDrive = false;
+  remoteFromDevice2.isSeedData = false;
+
+  const merged = mergeAttempts([localAttempt], [remoteDuplicateSynced, remoteFromDevice2]);
+  assert.equal(merged.length, 2);
+  // Newest first (DEV2-01 at 09:30 before DEV1-01 at 08:00)
+  assert.equal(merged[0].id, 'DEV2-01');
+  assert.equal(merged[0].syncedToDrive, false);
+  assert.equal(merged[1].id, 'DEV1-01');
+  // syncedToDrive upgraded from remote
+  assert.equal(merged[1].syncedToDrive, true);
+});
+

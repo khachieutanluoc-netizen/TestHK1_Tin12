@@ -78,7 +78,7 @@ interface DriveFileMeta {
 
 async function driveFetchJson<T>(url: string, options: RequestInit = {}): Promise<T> {
   if (!cachedAccessToken) {
-    throw new Error('Phiên Google Drive đã hết hạn. Vui lòng đăng nhập lại bằng Google.');
+    throw new Error('Phiên Google Drive đã hết hạn. Vui lòng kết nối lại bằng Google.');
   }
   const res = await fetch(url, {
     ...options,
@@ -90,7 +90,9 @@ async function driveFetchJson<T>(url: string, options: RequestInit = {}): Promis
 
   if (res.status === 401 || res.status === 403) {
     cachedAccessToken = null;
-    throw new Error('Không đủ quyền hoặc token Google Drive đã hết hạn. Vui lòng đăng nhập lại.');
+    throw new Error(
+      'Không đủ quyền hoặc token Google Drive đã hết hạn (401/403). Vui lòng kết nối lại bằng Google.'
+    );
   }
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
@@ -100,18 +102,41 @@ async function driveFetchJson<T>(url: string, options: RequestInit = {}): Promis
 }
 
 export async function listDriveJsonFiles(): Promise<DriveFileMeta[]> {
-  const query = `'${DRIVE_TARGET_FOLDER_ID}' in parents and trashed = false and mimeType = 'application/json'`;
-  const params = new URLSearchParams({
-    q: query,
-    fields: 'files(id,name,modifiedTime)',
-    pageSize: '100',
-    supportsAllDrives: 'true',
-    includeItemsFromAllDrives: 'true',
-  });
-  const data = await driveFetchJson<{ files?: DriveFileMeta[] }>(
-    `https://www.googleapis.com/drive/v3/files?${params.toString()}`
-  );
-  return data.files ?? [];
+  const query = `'${DRIVE_TARGET_FOLDER_ID}' in parents and trashed = false`;
+  const allFiles: DriveFileMeta[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const params = new URLSearchParams({
+      q: query,
+      fields: 'nextPageToken,files(id,name,modifiedTime)',
+      pageSize: '100',
+      orderBy: 'modifiedTime desc',
+      supportsAllDrives: 'true',
+      includeItemsFromAllDrives: 'true',
+    });
+    if (pageToken) {
+      params.set('pageToken', pageToken);
+    }
+
+    const data = await driveFetchJson<{
+      nextPageToken?: string;
+      files?: DriveFileMeta[];
+    }>(`https://www.googleapis.com/drive/v3/files?${params.toString()}`);
+
+    for (const f of data.files ?? []) {
+      if (
+        f.name.startsWith('ketqua_') ||
+        f.name === CONSOLIDATED_FILE_NAME ||
+        f.name.endsWith('.json')
+      ) {
+        allFiles.push(f);
+      }
+    }
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+
+  return allFiles;
 }
 
 /**
@@ -131,6 +156,7 @@ export async function uploadNewAttemptToDrive(attempt: AttemptRecord): Promise<s
   const payload: AttemptRecord = {
     ...attempt,
     syncedToDrive: true,
+    isSeedData: false,
   };
 
   const boundary = '-------vlTinHocBoundary314159';
@@ -156,36 +182,121 @@ export async function uploadNewAttemptToDrive(attempt: AttemptRecord): Promise<s
   return created.id;
 }
 
+export interface FetchDriveResult {
+  attempts: AttemptRecord[];
+  fileNames: Set<string>;
+  errorCount: number;
+}
+
 /**
  * Đọc tất cả các tệp kết quả JSON trong thư mục Drive được chia sẻ để đồng bộ về thiết bị.
  */
-export async function fetchRemoteAttemptsFromDrive(): Promise<AttemptRecord[]> {
+export async function fetchRemoteAttemptsFromDrive(): Promise<FetchDriveResult> {
   const files = await listDriveJsonFiles();
-  const collected: AttemptRecord[] = [];
+  const collected = new Map<string, AttemptRecord>();
+  const fileNames = new Set<string>(files.map((f) => f.name));
+  let errorCount = 0;
 
-  for (const file of files) {
-    if (!file.name.startsWith('ketqua_') && file.name !== CONSOLIDATED_FILE_NAME) {
-      continue;
-    }
-    try {
-      const content = await driveFetchJson<AttemptRecord | { attempts?: AttemptRecord[] }>(
-        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media&supportsAllDrives=true`
-      );
-      if (Array.isArray((content as { attempts?: AttemptRecord[] }).attempts)) {
-        for (const item of (content as { attempts: AttemptRecord[] }).attempts) {
-          if (item && item.id && item.exam) {
-            collected.push({ ...item, syncedToDrive: true });
+  const targetFiles = files.filter(
+    (f) => f.name.startsWith('ketqua_') || f.name === CONSOLIDATED_FILE_NAME
+  );
+
+  // Đọc song song theo từng lô 5 tệp để tối ưu tốc độ trên nhiều thiết bị
+  const batchSize = 5;
+  for (let i = 0; i < targetFiles.length; i += batchSize) {
+    const batch = targetFiles.slice(i, i + batchSize);
+    await Promise.all(
+      batch.map(async (file) => {
+        try {
+          const content = await driveFetchJson<
+            AttemptRecord | { attempts?: AttemptRecord[] }
+          >(
+            `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media&supportsAllDrives=true`
+          );
+          if (Array.isArray((content as { attempts?: AttemptRecord[] }).attempts)) {
+            for (const item of (content as { attempts: AttemptRecord[] }).attempts) {
+              if (item && item.id && item.exam && !item.isSeedData) {
+                collected.set(item.id, {
+                  ...item,
+                  syncedToDrive: true,
+                  isSeedData: false,
+                });
+              }
+            }
+          } else if (
+            (content as AttemptRecord).id &&
+            (content as AttemptRecord).exam &&
+            !(content as AttemptRecord).isSeedData
+          ) {
+            const item = content as AttemptRecord;
+            collected.set(item.id, {
+              ...item,
+              syncedToDrive: true,
+              isSeedData: false,
+            });
           }
+        } catch {
+          errorCount += 1;
         }
-      } else if ((content as AttemptRecord).id && (content as AttemptRecord).exam) {
-        collected.push({ ...(content as AttemptRecord), syncedToDrive: true });
-      }
+      })
+    );
+  }
+
+  return {
+    attempts: Array.from(collected.values()),
+    fileNames,
+    errorCount,
+  };
+}
+
+export interface BidirectionalDriveSyncResult {
+  remoteAttempts: AttemptRecord[];
+  uploadedAttemptIds: string[];
+  pulledCount: number;
+  pushedCount: number;
+  pushErrors: number;
+  readErrors: number;
+}
+
+/**
+ * Đồng bộ 2 chiều với Google Drive:
+ * 1) Tải mọi kết quả từ thư mục Drive về thiết bị.
+ * 2) Tự động tải lên những bài thi thực tế còn thiếu trên Drive (tạo tệp mới, không ghi đè).
+ */
+export async function syncBidirectionalWithDrive(
+  localAttempts: readonly AttemptRecord[]
+): Promise<BidirectionalDriveSyncResult> {
+  const { attempts: remoteAttempts, fileNames, errorCount: readErrors } =
+    await fetchRemoteAttemptsFromDrive();
+
+  const remoteById = new Set<string>(remoteAttempts.map((a) => a.id));
+  const pendingUpload = localAttempts.filter(
+    (a) =>
+      !a.isSeedData &&
+      !remoteById.has(a.id) &&
+      !fileNames.has(`ketqua_${a.id}.json`)
+  );
+
+  const uploadedAttemptIds: string[] = [];
+  let pushErrors = 0;
+
+  for (const att of pendingUpload) {
+    try {
+      await uploadNewAttemptToDrive(att);
+      uploadedAttemptIds.push(att.id);
     } catch {
-      // Bỏ qua tệp không đúng định dạng hoặc không đọc được
+      pushErrors += 1;
     }
   }
 
-  return collected;
+  return {
+    remoteAttempts,
+    uploadedAttemptIds,
+    pulledCount: remoteAttempts.length,
+    pushedCount: uploadedAttemptIds.length,
+    pushErrors,
+    readErrors,
+  };
 }
 
 export async function findConsolidatedDriveFile(): Promise<DriveFileMeta | null> {
@@ -210,7 +321,11 @@ export async function upsertConsolidatedAttemptsToDrive(
     {
       updatedAt: new Date().toISOString(),
       totalCount: realOrExportable.length,
-      attempts: realOrExportable.map((a) => ({ ...a, syncedToDrive: true })),
+      attempts: realOrExportable.map((a) => ({
+        ...a,
+        syncedToDrive: true,
+        isSeedData: false,
+      })),
     },
     null,
     2

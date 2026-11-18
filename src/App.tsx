@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { User } from 'firebase/auth';
 import { CheckCircle2, Info, X, XCircle } from 'lucide-react';
 import { ActiveExamView } from './components/ActiveExamView';
@@ -10,16 +10,22 @@ import { AppTab, Header } from './components/Header';
 import { ALL_D1_QUESTIONS, ALL_D2_QUESTIONS } from './data/questionBank';
 import {
   DRIVE_TARGET_FOLDER_URL,
-  fetchRemoteAttemptsFromDrive,
   findConsolidatedDriveFile,
   getCachedDriveToken,
   signInWithGoogleDrive,
   signOutGoogleDrive,
   subscribeAuthState,
+  syncBidirectionalWithDrive,
   uploadNewAttemptToDrive,
   upsertConsolidatedAttemptsToDrive,
 } from './services/driveSync';
 import {
+  fetchServerAttempts,
+  pushAttemptsToServer,
+  subscribeServerAttemptStream,
+} from './services/serverSync';
+import {
+  ATTEMPTS_STORAGE_KEY_EXPORT,
   loadAttempts,
   loadSavedCandidate,
   mergeAttempts,
@@ -39,6 +45,20 @@ interface PendingConfirmState {
   action: () => void;
 }
 
+const SYNC_CHANNEL_NAME = 'vl_tinhoc_sync_channel';
+
+function broadcastLocalSync(): void {
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      const ch = new BroadcastChannel(SYNC_CHANNEL_NAME);
+      ch.postMessage({ type: 'attempts-updated', at: Date.now() });
+      ch.close();
+    }
+  } catch {
+    // Bỏ qua nếu trình duyệt hạn chế BroadcastChannel
+  }
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('exam');
   const [examMode, setExamMode] = useState<ExamMode>('setup');
@@ -46,6 +66,9 @@ export default function App() {
     () => loadSavedCandidate() ?? { school: '', phone: '', email: '' }
   );
   const [attempts, setAttempts] = useState<AttemptRecord[]>(() => loadAttempts());
+  const attemptsRef = useRef<AttemptRecord[]>(attempts);
+  attemptsRef.current = attempts;
+
   const [currentExam, setCurrentExam] = useState<GeneratedExam | null>(null);
   const [selectedAttemptId, setSelectedAttemptId] = useState<string | null>(null);
 
@@ -53,18 +76,23 @@ export default function App() {
   const [driveUser, setDriveUser] = useState<User | null>(null);
   const [hasDriveToken, setHasDriveToken] = useState<boolean>(false);
   const [isSyncingDrive, setIsSyncingDrive] = useState<boolean>(false);
+  const [isRefreshingServer, setIsRefreshingServer] = useState<boolean>(false);
   const [statusBanner, setStatusBanner] = useState<{
     tone: 'success' | 'error' | 'info';
     message: string;
   } | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmState | null>(null);
 
-  useEffect(() => {
-    const unsubscribe = subscribeAuthState((user) => {
-      setDriveUser(user);
-      setHasDriveToken(Boolean(user && getCachedDriveToken()));
-    });
-    return () => unsubscribe();
+  const serverSyncInFlightRef = useRef<boolean>(false);
+  const lastServerSyncAtRef = useRef<number>(0);
+
+  const commitAttempts = useCallback((next: AttemptRecord[], broadcast = false) => {
+    attemptsRef.current = next;
+    setAttempts(next);
+    saveAttempts(next);
+    if (broadcast) {
+      broadcastLocalSync();
+    }
   }, []);
 
   const showBanner = useCallback(
@@ -73,6 +101,137 @@ export default function App() {
     },
     []
   );
+
+  // Đồng bộ 2 chiều với máy chủ dùng chung (/api/attempts) để mọi thiết bị đều cập nhật tức thời
+  const syncWithServer = useCallback(
+    async (opts?: { silent?: boolean; force?: boolean }) => {
+      const now = Date.now();
+      if (serverSyncInFlightRef.current) return false;
+      if (!opts?.force && now - lastServerSyncAtRef.current < 800) return false;
+
+      serverSyncInFlightRef.current = true;
+      lastServerSyncAtRef.current = now;
+      if (!opts?.silent) setIsRefreshingServer(true);
+
+      try {
+        const serverAttempts = await fetchServerAttempts();
+        const currentLocal = attemptsRef.current;
+
+        const serverById = new Map(serverAttempts.map((a) => [a.id, a]));
+        const needsPush = currentLocal.filter((a) => {
+          if (a.isSeedData) return false;
+          const onServer = serverById.get(a.id);
+          return !onServer || (Boolean(a.syncedToDrive) && !Boolean(onServer.syncedToDrive));
+        });
+
+        let merged = mergeAttempts(currentLocal, serverAttempts);
+        if (needsPush.length > 0) {
+          const afterPush = await pushAttemptsToServer(needsPush);
+          merged = mergeAttempts(merged, afterPush);
+        }
+
+        const changed =
+          merged.length !== currentLocal.length ||
+          merged.some(
+            (m, idx) =>
+              m.id !== currentLocal[idx]?.id ||
+              Boolean(m.syncedToDrive) !== Boolean(currentLocal[idx]?.syncedToDrive)
+          );
+
+        if (changed) {
+          commitAttempts(merged, false);
+        }
+
+        if (!opts?.silent) {
+          const realCount = merged.filter((a) => !a.isSeedData).length;
+          showBanner(
+            'success',
+            `Đã cập nhật dữ liệu mới nhất (${realCount} lượt thi thực tế đã đồng bộ đa thiết bị).`
+          );
+        }
+        return true;
+      } catch (err) {
+        if (!opts?.silent) {
+          const msg =
+            err instanceof Error ? err.message : 'Không thể làm mới dữ liệu từ máy chủ.';
+          showBanner('error', msg);
+        }
+        return false;
+      } finally {
+        serverSyncInFlightRef.current = false;
+        if (!opts?.silent) setIsRefreshingServer(false);
+      }
+    },
+    [commitAttempts, showBanner]
+  );
+
+  // Theo dõi trạng thái Firebase Auth
+  useEffect(() => {
+    const unsubscribe = subscribeAuthState((user) => {
+      setDriveUser(user);
+      setHasDriveToken(Boolean(user && getCachedDriveToken()));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Đồng bộ lần đầu + lắng nghe Server-Sent Events (SSE) + đồng bộ giữa các tab cùng trình duyệt
+  useEffect(() => {
+    void syncWithServer({ silent: true, force: true });
+
+    const unsubscribeStream = subscribeServerAttemptStream(() => {
+      void syncWithServer({ silent: true, force: true });
+    });
+
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === ATTEMPTS_STORAGE_KEY_EXPORT && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue) as AttemptRecord[];
+          if (Array.isArray(parsed)) {
+            const merged = mergeAttempts(attemptsRef.current, parsed);
+            attemptsRef.current = merged;
+            setAttempts(merged);
+          }
+        } catch {
+          // Bỏ qua JSON lỗi
+        }
+      }
+    };
+
+    let channel: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        channel = new BroadcastChannel(SYNC_CHANNEL_NAME);
+        channel.onmessage = () => {
+          const fromStorage = loadAttempts();
+          const merged = mergeAttempts(attemptsRef.current, fromStorage);
+          attemptsRef.current = merged;
+          setAttempts(merged);
+        };
+      }
+    } catch {
+      channel = null;
+    }
+
+    const handleFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void syncWithServer({ silent: true });
+      }
+    };
+
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener('focus', handleFocusOrVisible);
+    document.addEventListener('visibilitychange', handleFocusOrVisible);
+
+    return () => {
+      unsubscribeStream();
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('focus', handleFocusOrVisible);
+      document.removeEventListener('visibilitychange', handleFocusOrVisible);
+      if (channel) {
+        channel.close();
+      }
+    };
+  }, [syncWithServer]);
 
   const selectedAttempt = useMemo(
     () => attempts.find((a) => a.id === selectedAttemptId) ?? null,
@@ -94,59 +253,113 @@ export default function App() {
     );
   }, [attempts, selectedAttempt]);
 
+  // Đồng bộ 2 chiều với Google Drive (tải về + đẩy bài thiếu lên Drive) rồi chia sẻ qua máy chủ
+  const runDriveTwoWaySync = useCallback(
+    async (opts?: { emailLabel?: string; extraAttempt?: AttemptRecord }) => {
+      setIsSyncingDrive(true);
+      try {
+        // Kéo dữ liệu mới nhất từ các thiết bị khác trước khi đẩy lên Drive
+        await syncWithServer({ silent: true, force: true });
+
+        const res = await syncBidirectionalWithDrive(attemptsRef.current);
+        const uploadedSet = new Set(res.uploadedAttemptIds);
+
+        // Nếu có bài cụ thể được yêu cầu upload mà chưa nằm trong kết quả, kiểm tra lại
+        if (
+          opts?.extraAttempt &&
+          !opts.extraAttempt.isSeedData &&
+          !uploadedSet.has(opts.extraAttempt.id) &&
+          !res.remoteAttempts.some((r) => r.id === opts.extraAttempt!.id)
+        ) {
+          await uploadNewAttemptToDrive(opts.extraAttempt);
+          uploadedSet.add(opts.extraAttempt.id);
+        }
+
+        const updatedLocal = attemptsRef.current.map((a) =>
+          uploadedSet.has(a.id) ? { ...a, syncedToDrive: true } : a
+        );
+        const merged = mergeAttempts(updatedLocal, res.remoteAttempts);
+        commitAttempts(merged, true);
+
+        const realMerged = merged.filter((a) => !a.isSeedData);
+        if (realMerged.length > 0) {
+          await pushAttemptsToServer(realMerged).catch(() => undefined);
+        }
+
+        const warnNote =
+          res.readErrors > 0 || res.pushErrors > 0
+            ? ` (Lưu ý: ${res.readErrors + res.pushErrors} tệp gặp lỗi mạng khi đồng bộ)`
+            : '';
+        const prefix = opts?.emailLabel
+          ? `Đã kết nối Google Drive (${opts.emailLabel}). `
+          : 'Đồng bộ Google Drive thành công: ';
+
+        showBanner(
+          'success',
+          `${prefix}Nhận ${res.pulledCount} bài trên Drive, đẩy thêm ${uploadedSet.size} bài mới lên đám mây.${warnNote}`
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Không thể đồng bộ Google Drive.';
+        showBanner('error', msg);
+        setHasDriveToken(Boolean(getCachedDriveToken()));
+      } finally {
+        setIsSyncingDrive(false);
+      }
+    },
+    [commitAttempts, showBanner, syncWithServer]
+  );
+
   const handleSyncFromDrive = useCallback(async () => {
     if (!getCachedDriveToken()) {
       showBanner('info', 'Vui lòng nhấn "Kết nối Google Drive" để đồng bộ dữ liệu trực tuyến.');
       return;
     }
-    setIsSyncingDrive(true);
-    try {
-      const remote = await fetchRemoteAttemptsFromDrive();
-      setAttempts((prev) => {
-        const merged = mergeAttempts(prev, remote);
-        saveAttempts(merged);
-        return merged;
-      });
-      showBanner(
-        'success',
-        `Đồng bộ Google Drive thành công (${remote.length} bản ghi trên đám mây).`
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Không thể đồng bộ từ Google Drive.';
-      showBanner('error', msg);
-      setHasDriveToken(Boolean(getCachedDriveToken()));
-    } finally {
-      setIsSyncingDrive(false);
-    }
-  }, [showBanner]);
+    await runDriveTwoWaySync();
+  }, [runDriveTwoWaySync, showBanner]);
 
-  const handleSignInDrive = async () => {
+  const handleSignInDrive = useCallback(async () => {
     setIsSyncingDrive(true);
     try {
       const { user, hasToken } = await signInWithGoogleDrive();
       setDriveUser(user);
       setHasDriveToken(hasToken);
       if (hasToken) {
-        const remote = await fetchRemoteAttemptsFromDrive();
-        setAttempts((prev) => {
-          const merged = mergeAttempts(prev, remote);
-          saveAttempts(merged);
-          return merged;
-        });
-        showBanner(
-          'success',
-          `Đã kết nối Google Drive (${user.email}) và đồng bộ ${remote.length} kết quả trực tuyến.`
-        );
+        await runDriveTwoWaySync({ emailLabel: user.email ?? undefined });
       } else {
+        setIsSyncingDrive(false);
         showBanner('info', 'Đã đăng nhập Google nhưng chưa nhận được quyền ghi Drive.');
       }
     } catch (err) {
+      setIsSyncingDrive(false);
       const msg = err instanceof Error ? err.message : 'Đăng nhập Google Drive thất bại.';
       showBanner('error', msg);
-    } finally {
-      setIsSyncingDrive(false);
     }
-  };
+  }, [runDriveTwoWaySync, showBanner]);
+
+  const handleSignInAndUploadDrive = useCallback(
+    async (attempt: AttemptRecord) => {
+      setIsSyncingDrive(true);
+      try {
+        const { user, hasToken } = await signInWithGoogleDrive();
+        setDriveUser(user);
+        setHasDriveToken(hasToken);
+        if (hasToken) {
+          await runDriveTwoWaySync({
+            emailLabel: user.email ?? undefined,
+            extraAttempt: attempt,
+          });
+        } else {
+          setIsSyncingDrive(false);
+          showBanner('info', 'Đã đăng nhập Google nhưng chưa nhận được quyền ghi Drive.');
+        }
+      } catch (err) {
+        setIsSyncingDrive(false);
+        const msg = err instanceof Error ? err.message : 'Kết nối Google Drive thất bại.';
+        showBanner('error', msg);
+      }
+    },
+    [runDriveTwoWaySync, showBanner]
+  );
 
   const handleSignOutDrive = async () => {
     await signOutGoogleDrive();
@@ -164,33 +377,32 @@ export default function App() {
       setIsSyncingDrive(true);
       try {
         await uploadNewAttemptToDrive(attempt);
-        setAttempts((prev) => {
-          const next = prev.map((a) =>
-            a.id === attempt.id ? { ...a, syncedToDrive: true } : a
-          );
-          saveAttempts(next);
-          return next;
-        });
+        const updated = attemptsRef.current.map((a) =>
+          a.id === attempt.id ? { ...a, syncedToDrive: true } : a
+        );
+        commitAttempts(updated, true);
+        await pushAttemptsToServer([{ ...attempt, syncedToDrive: true }]).catch(() => undefined);
         showBanner('success', `Đã lưu bài thi ${attempt.id} lên thư mục Google Drive.`);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Lưu bài thi lên Google Drive thất bại.';
+        const msg =
+          err instanceof Error ? err.message : 'Lưu bài thi lên Google Drive thất bại.';
         showBanner('error', msg);
         setHasDriveToken(Boolean(getCachedDriveToken()));
       } finally {
         setIsSyncingDrive(false);
       }
     },
-    [showBanner]
+    [commitAttempts, showBanner]
   );
 
-  // Đồng bộ các bài chưa đẩy hoặc cập nhật tệp tổng hợp (có bước xác nhận rõ ràng nếu ghi đè tệp)
+  // Đồng bộ tệp tổng hợp trên Google Drive (có bước xác nhận rõ ràng nếu ghi đè tệp)
   const handleBackupConsolidatedToDrive = async () => {
     if (!getCachedDriveToken()) {
       showBanner('info', 'Vui lòng kết nối Google Drive trước.');
       return;
     }
 
-    const toPush = attempts.filter((a) => !a.isSeedData);
+    const toPush = attemptsRef.current.filter((a) => !a.isSeedData);
     if (toPush.length === 0) {
       showBanner('info', 'Chưa có bài làm thực tế nào trên thiết bị để đồng bộ.');
       return;
@@ -206,7 +418,9 @@ export default function App() {
         : `Tạo tệp tổng hợp mới chứa ${toPush.length} lượt làm bài trong thư mục Google Drive của bạn?`;
 
       setPendingConfirm({
-        title: existing ? 'Xác nhận cập nhật tệp trên Google Drive' : 'Xác nhận lưu tệp lên Google Drive',
+        title: existing
+          ? 'Xác nhận cập nhật tệp trên Google Drive'
+          : 'Xác nhận lưu tệp lên Google Drive',
         message: confirmMsg,
         confirmLabel: existing ? 'Đồng ý cập nhật tệp' : 'Lưu lên Drive',
         tone: existing ? 'warning' : 'primary',
@@ -214,20 +428,19 @@ export default function App() {
           setPendingConfirm(null);
           setIsSyncingDrive(true);
           try {
-            await upsertConsolidatedAttemptsToDrive(attempts, existing?.id ?? null);
-            setAttempts((prev) => {
-              const next = prev.map((a) =>
-                !a.isSeedData ? { ...a, syncedToDrive: true } : a
-              );
-              saveAttempts(next);
-              return next;
-            });
+            await upsertConsolidatedAttemptsToDrive(attemptsRef.current, existing?.id ?? null);
+            const next = attemptsRef.current.map((a) =>
+              !a.isSeedData ? { ...a, syncedToDrive: true } : a
+            );
+            commitAttempts(next, true);
+            await pushAttemptsToServer(next.filter((a) => !a.isSeedData)).catch(() => undefined);
             showBanner(
               'success',
               `Đã đồng bộ ${toPush.length} bài thi lên thư mục Google Drive thành công.`
             );
           } catch (err) {
-            const msg = err instanceof Error ? err.message : 'Lỗi khi cập nhật tệp Google Drive.';
+            const msg =
+              err instanceof Error ? err.message : 'Lỗi khi cập nhật tệp Google Drive.';
             showBanner('error', msg);
             setHasDriveToken(Boolean(getCachedDriveToken()));
           } finally {
@@ -237,11 +450,20 @@ export default function App() {
       });
     } catch (err) {
       setIsSyncingDrive(false);
-      const msg = err instanceof Error ? err.message : 'Không thể kiểm tra thư mục Google Drive.';
+      const msg =
+        err instanceof Error ? err.message : 'Không thể kiểm tra thư mục Google Drive.';
       showBanner('error', msg);
       setHasDriveToken(Boolean(getCachedDriveToken()));
     }
   };
+
+  const handleRefreshDashboard = useCallback(async () => {
+    if (getCachedDriveToken()) {
+      await runDriveTwoWaySync();
+    } else {
+      await syncWithServer({ silent: false, force: true });
+    }
+  }, [runDriveTwoWaySync, syncWithServer]);
 
   const handleStartExam = (validatedCandidate: CandidateInfo) => {
     setCandidate(validatedCandidate);
@@ -271,43 +493,54 @@ export default function App() {
         autoSubmittedReason,
       });
 
-      setAttempts((prev) => {
-        const next = [graded, ...prev];
-        saveAttempts(next);
-        return next;
-      });
+      const nextAfterLocal = mergeAttempts([graded], attemptsRef.current);
+      commitAttempts(nextAfterLocal, true);
       setSelectedAttemptId(graded.id);
       setExamMode('result');
       window.scrollTo({ top: 0, behavior: 'smooth' });
 
-      // Nếu đã kết nối Google Drive, tự động tạo file mới ketqua_<id>.json trên Drive (không ghi đè file khác)
+      // Đẩy ngay lên máy chủ dùng chung để các thiết bị khác nhận kết quả theo thời gian thực
+      let syncedToServer = false;
+      try {
+        const serverList = await pushAttemptsToServer([graded]);
+        const reconciled = mergeAttempts(attemptsRef.current, serverList);
+        commitAttempts(reconciled, true);
+        syncedToServer = true;
+      } catch {
+        syncedToServer = false;
+      }
+
+      // Nếu đã kết nối Google Drive, tự động tạo tệp ketqua_<id>.json trên Drive
       if (getCachedDriveToken()) {
         setIsSyncingDrive(true);
         try {
           await uploadNewAttemptToDrive(graded);
-          setAttempts((prev) => {
-            const next = prev.map((a) =>
-              a.id === graded.id ? { ...a, syncedToDrive: true } : a
-            );
-            saveAttempts(next);
-            return next;
-          });
+          const marked = attemptsRef.current.map((a) =>
+            a.id === graded.id ? { ...a, syncedToDrive: true } : a
+          );
+          commitAttempts(marked, true);
+          await pushAttemptsToServer([{ ...graded, syncedToDrive: true }]).catch(() => undefined);
           showBanner(
             'success',
-            `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10) và tự động lưu kết quả lên Google Drive.`
+            `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10) và tự động lưu kết quả lên Google Drive & đồng bộ các thiết bị.`
           );
         } catch {
           showBanner(
             'info',
-            `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10) và lưu trên thiết bị. Nhấn "Lưu bài này lên Google Drive" để thử đồng bộ lại.`
+            `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10)${syncedToServer ? ' và đồng bộ máy chủ' : ''}. Nhấn "Lưu bài này lên Google Drive" để đồng bộ lên Drive.`
           );
           setHasDriveToken(Boolean(getCachedDriveToken()));
         } finally {
           setIsSyncingDrive(false);
         }
+      } else if (syncedToServer) {
+        showBanner(
+          'success',
+          `Đã chấm điểm (${graded.totalScore.toFixed(2)}/10) và đồng bộ kết quả lên hệ thống đa thiết bị.`
+        );
       }
     },
-    [candidate, currentExam, showBanner]
+    [candidate, commitAttempts, currentExam, showBanner]
   );
 
   const handleTabSwitch = (nextTab: AppTab) => {
@@ -324,11 +557,15 @@ export default function App() {
           setCurrentExam(null);
           setExamMode('setup');
           setActiveTab('dashboard');
+          void syncWithServer({ silent: true, force: true });
         },
       });
       return;
     }
     setActiveTab(nextTab);
+    if (nextTab === 'dashboard') {
+      void syncWithServer({ silent: true, force: true });
+    }
   };
 
   const handleReviewAttempt = (attempt: AttemptRecord) => {
@@ -407,6 +644,7 @@ export default function App() {
                 window.scrollTo({ top: 0, behavior: 'smooth' });
               }}
               onUploadSingleAttemptToDrive={handleUploadSingleAttemptToDrive}
+              onSignInAndUploadDrive={handleSignInAndUploadDrive}
               onStartNewExam={() => handleStartExam(candidate)}
               onBackToSetup={() => {
                 setExamMode('setup');
@@ -422,7 +660,12 @@ export default function App() {
             />
           )
         ) : (
-          <DashboardView attempts={attempts} onInspectAttempt={handleReviewAttempt} />
+          <DashboardView
+            attempts={attempts}
+            onInspectAttempt={handleReviewAttempt}
+            onRefreshData={handleRefreshDashboard}
+            isRefreshing={isRefreshingServer || isSyncingDrive}
+          />
         )}
       </main>
 
@@ -430,7 +673,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500">
           <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 text-center sm:text-left">
             <span className="font-semibold text-slate-700">
-              Ứng dụng Ôn tập kiểm tra Giữa học Kỳ 1 năm học 2026-2027 Bộ môn Tin học Tỉnh Vĩnh Long
+              Ứng dụng Ôn tập chuẩn bị kiểm tra Học Kỳ 1 năm học 2026-2027 Bộ môn Tin học Tỉnh Vĩnh Long
             </span>
             <span className="hidden sm:inline">·</span>
             <a

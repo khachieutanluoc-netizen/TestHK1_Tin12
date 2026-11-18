@@ -306,22 +306,31 @@ export function saveAttempts(attempts: AttemptRecord[]): void {
   }
 }
 
+export const ATTEMPTS_STORAGE_KEY_EXPORT = ATTEMPTS_STORAGE_KEY;
+
 export function mergeAttempts(
   local: readonly AttemptRecord[],
   remote: readonly AttemptRecord[]
 ): AttemptRecord[] {
   const byId = new Map<string, AttemptRecord>();
   for (const item of local) {
+    if (!item || !item.id) continue;
     byId.set(item.id, item);
   }
   for (const item of remote) {
+    if (!item || !item.id) continue;
     const existing = byId.get(item.id);
     if (!existing) {
-      byId.set(item.id, { ...item, syncedToDrive: true });
+      byId.set(item.id, {
+        ...item,
+        syncedToDrive: Boolean(item.syncedToDrive),
+        isSeedData: Boolean(item.isSeedData),
+      });
     } else {
       byId.set(item.id, {
         ...existing,
-        syncedToDrive: existing.syncedToDrive || item.syncedToDrive,
+        syncedToDrive: Boolean(existing.syncedToDrive || item.syncedToDrive),
+        isSeedData: Boolean(existing.isSeedData && item.isSeedData),
       });
     }
   }
@@ -329,3 +338,4 @@ export function mergeAttempts(
     (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
   );
 }
+

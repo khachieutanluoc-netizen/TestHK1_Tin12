@@ -1,6 +1,6 @@
 import React from 'react';
 import { User } from 'firebase/auth';
-import { BarChart3, Cloud, CloudOff, FileSpreadsheet, GraduationCap, LogOut, RefreshCw } from 'lucide-react';
+import { BarChart3, Cloud, FileSpreadsheet, GraduationCap, LogOut, RefreshCw } from 'lucide-react';
 import { DRIVE_TARGET_FOLDER_URL } from '../services/driveSync';
 
 export type AppTab = 'exam' | 'dashboard';
@@ -44,7 +44,7 @@ export const Header: React.FC<HeaderProps> = ({
                 Sở Giáo dục và Đào tạo Vĩnh Long · Tin học 12
               </p>
               <h1 className="text-[13px] sm:text-[15px] font-extrabold text-slate-900 leading-snug">
-                Ứng dụng Ôn tập kiểm tra Giữa học Kỳ 1 năm học 2026-2027 Bộ môn Tin học Tỉnh Vĩnh Long
+                Ứng dụng Ôn tập chuẩn bị kiểm tra Học Kỳ 1 năm học 2026-2027 Bộ môn Tin học Tỉnh Vĩnh Long
               </h1>
             </div>
           </div>
@@ -129,20 +129,21 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                {driveUser && !hasDriveToken && (
-                  <span
-                    className="hidden md:inline-flex items-center gap-1 text-xs font-medium text-amber-800 bg-amber-50 border border-amber-200 px-2 py-1 rounded-md"
-                    title="Token phiên Drive cần cấp lại khi tải lại trang"
-                  >
-                    <CloudOff className="w-3.5 h-3.5" />
-                    <span>Cần kết nối lại Drive</span>
-                  </span>
-                )}
                 <button
                   type="button"
                   onClick={onSignInDrive}
-                  className="gsi-material-button"
-                  aria-label="Kết nối Google Drive để đồng bộ kết quả"
+                  disabled={isSyncingDrive}
+                  title={
+                    driveUser && !hasDriveToken
+                      ? 'Phiên Google Drive cần cấp quyền lại sau khi tải lại trang'
+                      : 'Kết nối Google Drive để đồng bộ kết quả'
+                  }
+                  className="gsi-material-button disabled:opacity-60"
+                  aria-label={
+                    driveUser && !hasDriveToken
+                      ? 'Làm mới kết nối Google Drive'
+                      : 'Kết nối Google Drive để đồng bộ kết quả'
+                  }
                 >
                   <span className="gsi-material-button-content-wrapper">
                     <svg
@@ -167,7 +168,11 @@ export const Header: React.FC<HeaderProps> = ({
                         d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
                       />
                     </svg>
-                    <span>Kết nối Google Drive</span>
+                    <span>
+                      {driveUser && !hasDriveToken
+                        ? 'Làm mới kết nối Drive'
+                        : 'Kết nối Google Drive'}
+                    </span>
                   </span>
                 </button>
               </div>

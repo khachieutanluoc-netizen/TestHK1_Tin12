@@ -8,6 +8,7 @@ import {
   Download,
   Eye,
   FilterX,
+  RefreshCw,
   Search,
   Square,
   TrendingDown,
@@ -21,11 +22,15 @@ import { exportDashboardToExcel } from '../utils/excelExport';
 interface DashboardViewProps {
   attempts: AttemptRecord[];
   onInspectAttempt: (attempt: AttemptRecord) => void;
+  onRefreshData: () => void;
+  isRefreshing?: boolean;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
   attempts,
   onInspectAttempt,
+  onRefreshData,
+  isRefreshing = false,
 }) => {
   const [scopeMode, setScopeMode] = useState<'province' | 'schools'>('province');
   const [selectedSchools, setSelectedSchools] = useState<string[]>([]);
@@ -35,6 +40,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [studentSearch, setStudentSearch] = useState('');
   const [includeSampleData, setIncludeSampleData] = useState(true);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
+
+  const realAttemptsCount = useMemo(
+    () => attempts.filter((a) => !a.isSeedData).length,
+    [attempts]
+  );
+  const seedAttemptsCount = attempts.length - realAttemptsCount;
 
   const activeAttempts = useMemo(() => {
     if (includeSampleData) return attempts;
@@ -130,6 +141,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
               Phạm vi: Chọn thống kê toàn tỉnh Vĩnh Long hoặc đánh dấu chọn từng trường để phát hiện lỗ hổng kiến thức.
             </p>
+            <p className="text-xs text-slate-500 mt-1 tabular-nums">
+              Dữ liệu thi thực tế đã đồng bộ:{' '}
+              <strong className="text-blue-700">{realAttemptsCount} lượt</strong>
+              {seedAttemptsCount > 0 ? ` · Dữ liệu mẫu: ${seedAttemptsCount} lượt` : ''}
+            </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
@@ -140,8 +156,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 onChange={(e) => setIncludeSampleData(e.target.checked)}
                 className="rounded border-slate-300 text-blue-700 focus:ring-blue-600"
               />
-              <span>Bao gồm dữ liệu mẫu toàn tỉnh</span>
+              <span>Bao gồm dữ liệu mẫu ({seedAttemptsCount})</span>
             </label>
+
+            <button
+              type="button"
+              onClick={onRefreshData}
+              disabled={isRefreshing}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs sm:text-sm font-semibold text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer disabled:opacity-60"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+              <span>{isRefreshing ? 'Đang cập nhật...' : 'Làm mới thống kê'}</span>
+            </button>
 
             <button
               type="button"
@@ -623,6 +649,96 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         )}
       </section>
+
+      {/* Bảng Thống Kê Tổng Hợp Theo Đơn Vị Trường Học */}
+      {stats.schoolSummaries.length > 0 && (
+        <section
+          aria-labelledby="school-summary-heading"
+          className="bg-white rounded-xl border border-slate-200 overflow-hidden"
+        >
+          <div className="px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 id="school-summary-heading" className="text-base font-bold text-slate-900">
+                Thống kê tổng hợp theo đơn vị Trường học ({stats.schoolSummaries.length} trường)
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Nhấn vào một trường để lọc nhanh thống kê riêng cho đơn vị đó.
+              </p>
+            </div>
+            {scopeMode === 'schools' && selectedSchools.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setScopeMode('province');
+                  setSelectedSchools([]);
+                }}
+                className="text-xs font-semibold text-blue-700 hover:underline cursor-pointer self-start sm:self-auto"
+              >
+                Xem toàn tỉnh
+              </button>
+            )}
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
+                  <th className="py-3 px-4 w-14 text-center">STT</th>
+                  <th className="py-3 px-4">Tên trường / Trung tâm</th>
+                  <th className="py-3 px-4 text-right">Thí sinh</th>
+                  <th className="py-3 px-4 text-right">Lượt làm bài</th>
+                  <th className="py-3 px-4 text-right">Điểm bình quân</th>
+                  <th className="py-3 px-4">Chủ đề yếu nhất</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-sm">
+                {stats.schoolSummaries.map((s, idx) => {
+                  const isFocused =
+                    scopeMode === 'schools' &&
+                    selectedSchools.length === 1 &&
+                    selectedSchools[0] === s.school;
+                  return (
+                    <tr
+                      key={s.school}
+                      onClick={() => {
+                        if (isFocused) {
+                          setScopeMode('province');
+                          setSelectedSchools([]);
+                        } else {
+                          setScopeMode('schools');
+                          setSelectedSchools([s.school]);
+                        }
+                      }}
+                      className={`cursor-pointer transition-colors ${
+                        isFocused ? 'bg-blue-50/70' : 'hover:bg-slate-50/80'
+                      }`}
+                    >
+                      <td className="py-3 px-4 text-center font-mono text-xs text-slate-600 tabular-nums">
+                        {idx + 1}
+                      </td>
+                      <td className="py-3 px-4 font-medium text-slate-900 text-xs sm:text-sm">
+                        {s.school}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono text-xs text-slate-700 tabular-nums">
+                        {s.studentCount}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono text-xs text-slate-700 tabular-nums">
+                        {s.attemptCount}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono font-bold text-blue-700 tabular-nums">
+                        {s.avgScore.toFixed(2)}
+                      </td>
+                      <td className="py-3 px-4 text-xs font-medium text-rose-700">
+                        {s.weakestLessonTitle}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   );
 };
