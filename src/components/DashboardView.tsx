@@ -38,19 +38,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [topicFilter, setTopicFilter] = useState<LessonId | null>(null);
   const [tierFilter, setTierFilter] = useState<ScoreTierFilter>('all');
   const [studentSearch, setStudentSearch] = useState('');
-  const [includeSampleData, setIncludeSampleData] = useState(true);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
 
-  const realAttemptsCount = useMemo(
-    () => attempts.filter((a) => !a.isSeedData).length,
-    [attempts]
-  );
-  const seedAttemptsCount = attempts.length - realAttemptsCount;
-
-  const activeAttempts = useMemo(() => {
-    if (includeSampleData) return attempts;
-    return attempts.filter((a) => !a.isSeedData);
-  }, [attempts, includeSampleData]);
+  const activeAttempts = attempts;
 
   // Đếm số lượt thi theo từng trường để giáo viên dễ chọn trường có dữ liệu
   const attemptCountBySchool = useMemo(() => {
@@ -142,22 +132,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               Phạm vi: Chọn thống kê toàn tỉnh Vĩnh Long hoặc đánh dấu chọn từng trường để phát hiện lỗ hổng kiến thức.
             </p>
             <p className="text-xs text-slate-500 mt-1 tabular-nums">
-              Dữ liệu thi thực tế đã đồng bộ:{' '}
-              <strong className="text-blue-700">{realAttemptsCount} lượt</strong>
-              {seedAttemptsCount > 0 ? ` · Dữ liệu mẫu: ${seedAttemptsCount} lượt` : ''}
+              Tổng nhật ký làm bài đã đồng bộ đa thiết bị:{' '}
+              <strong className="text-blue-700">{attempts.length} lượt</strong>
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-xs font-medium text-slate-700 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={includeSampleData}
-                onChange={(e) => setIncludeSampleData(e.target.checked)}
-                className="rounded border-slate-300 text-blue-700 focus:ring-blue-600"
-              />
-              <span>Bao gồm dữ liệu mẫu ({seedAttemptsCount})</span>
-            </label>
 
             <button
               type="button"
@@ -574,7 +554,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 type="text"
                 value={studentSearch}
                 onChange={(e) => setStudentSearch(e.target.value)}
-                placeholder="Tìm email, SĐT, trường..."
+                placeholder="Tìm SBD (8 số), trường..."
                 aria-label="Tìm kiếm thí sinh trong bảng xếp hạng"
                 className="pl-8 pr-3 py-1.5 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600"
               />
@@ -593,7 +573,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
                   <th className="py-3 px-4 w-16 text-center">Hạng</th>
                   <th className="py-3 px-4">Trường THPT / Trung tâm</th>
-                  <th className="py-3 px-4">Thí sinh (Email · SĐT)</th>
+                  <th className="py-3 px-4">Số báo danh (SBD)</th>
                   <th className="py-3 px-4 text-right">Số lượt</th>
                   <th className="py-3 px-4 text-right">Điểm TB</th>
                   <th className="py-3 px-4 text-right">Cao nhất</th>
@@ -611,8 +591,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       {row.school}
                     </td>
                     <td className="py-3 px-4">
-                      <p className="text-xs sm:text-sm font-semibold text-slate-900">{row.email}</p>
-                      <p className="text-xs text-slate-500 tabular-nums">{row.phone}</p>
+                      <p className="font-mono text-xs sm:text-sm font-bold text-blue-800 tabular-nums">
+                        SBD: {row.sbd}
+                      </p>
+                      <p className="text-[11px] text-slate-500 tabular-nums">
+                        {row.email || row.phone
+                          ? [row.email, row.phone].filter(Boolean).join(' · ')
+                          : 'Bảo mật SĐT/Email'}
+                      </p>
                     </td>
                     <td className="py-3 px-4 text-right font-mono text-xs text-slate-700 tabular-nums">
                       {row.attemptCount}

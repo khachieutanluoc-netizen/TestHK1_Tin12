@@ -12,9 +12,10 @@ export function exportDashboardToExcel(
   // Sheet 1: Danh sách học sinh xếp hạng theo điểm bình quân (theo bộ lọc hiện tại)
   const rankingRows = stats.filteredRankings.map((row) => ({
     'Hạng toàn bảng': row.rank,
+    'Số báo danh (SBD)': row.sbd,
     'Trường': row.school,
-    'Số điện thoại': row.phone,
-    'Email': row.email,
+    'Số điện thoại (Bảo mật)': row.phone || 'Bảo mật (không cung cấp)',
+    'Email (Bảo mật)': row.email || 'Bảo mật (không cung cấp)',
     'Số lượt làm bài': row.attemptCount,
     'Điểm bình quân': row.avgScore,
     'Điểm cao nhất': row.bestScore,
@@ -29,8 +30,9 @@ export function exportDashboardToExcel(
   );
   wsRankings['!cols'] = [
     { wch: 14 },
+    { wch: 18 },
     { wch: 38 },
-    { wch: 15 },
+    { wch: 24 },
     { wch: 28 },
     { wch: 16 },
     { wch: 16 },
@@ -89,9 +91,10 @@ export function exportDashboardToExcel(
   const attemptRows = scopedAttempts.map((a, idx) => ({
     'STT': idx + 1,
     'Mã lượt thi': a.id,
+    'Số báo danh (SBD)': a.sbd,
     'Trường': a.school,
-    'Số điện thoại': a.phone,
-    'Email': a.email,
+    'Số điện thoại (Bảo mật)': a.phone || 'Bảo mật (không cung cấp)',
+    'Email (Bảo mật)': a.email || 'Bảo mật (không cung cấp)',
     'Điểm Phần I': a.part1Score,
     'Điểm Phần II': a.part2Score,
     'Tổng điểm': a.totalScore,
@@ -111,8 +114,9 @@ export function exportDashboardToExcel(
   wsAttempts['!cols'] = [
     { wch: 6 },
     { wch: 20 },
+    { wch: 18 },
     { wch: 36 },
-    { wch: 15 },
+    { wch: 24 },
     { wch: 26 },
     { wch: 14 },
     { wch: 14 },

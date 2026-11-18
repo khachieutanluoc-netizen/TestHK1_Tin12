@@ -55,7 +55,11 @@ export function getScoreTierId(score: number): Exclude<ScoreTierFilter, 'all'> {
   return 'weak';
 }
 
-export function getStudentKey(attempt: Pick<AttemptRecord, 'school' | 'phone' | 'email'>): string {
+export function getStudentKey(
+  attempt: Pick<AttemptRecord, 'sbd' | 'school' | 'phone' | 'email'>
+): string {
+  const sbd = attempt.sbd?.trim();
+  if (sbd) return `sbd:${sbd}`;
   return `${attempt.school.trim()}||${attempt.phone.trim()}||${attempt.email.trim().toLowerCase()}`;
 }
 
@@ -180,6 +184,7 @@ export function computeDashboardStats(
 
     rawRows.push({
       studentKey,
+      sbd: latest.sbd,
       phone: latest.phone,
       email: latest.email,
       school: latest.school,
@@ -199,7 +204,7 @@ export function computeDashboardStats(
     if (b.avgScore !== a.avgScore) return b.avgScore - a.avgScore;
     if (b.bestScore !== a.bestScore) return b.bestScore - a.bestScore;
     if (b.attemptCount !== a.attemptCount) return b.attemptCount - a.attemptCount;
-    return a.email.localeCompare(b.email);
+    return a.sbd.localeCompare(b.sbd);
   });
 
   const rankings: StudentRankingRow[] = rawRows.map((row, index) => ({
@@ -313,7 +318,7 @@ export function computeDashboardStats(
       if (!isWeakInTopic) return false;
     }
     if (qNorm) {
-      const hay = `${row.school} ${row.phone} ${row.email} ${row.weakestLessonTitle}`.toLowerCase();
+      const hay = `${row.sbd} ${row.school} ${row.phone} ${row.email} ${row.weakestLessonTitle}`.toLowerCase();
       if (!hay.includes(qNorm)) return false;
     }
     return true;

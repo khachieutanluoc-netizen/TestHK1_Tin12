@@ -7,6 +7,7 @@ import { CognitiveLevel, LessonId } from '../types/exam';
 import {
   createEmptyAnswers,
   generateExam,
+  generateUniqueSbd,
   gradeExam,
   validateCandidateForm,
 } from './examEngine';
@@ -19,10 +20,32 @@ function createSeededRng(seed: number): () => number {
   };
 }
 
-test('validateCandidateForm accepts valid school, Vietnamese phone, and email', () => {
+test('validateCandidateForm auto-issues a unique 8-digit SBD on first attempt and allows blank phone/email', () => {
   const res = validateCandidateForm(
     {
       school: SCHOOLS[0],
+      sbd: '',
+      phone: '',
+      email: '',
+    },
+    SCHOOLS,
+    ['10000000'],
+    () => 0
+  );
+  assert.equal(res.valid, true);
+  assert.deepEqual(res.errors, {});
+  assert.equal(res.isNewlyGeneratedSbd, true);
+  assert.match(res.normalized.sbd, /^[0-9]{8}$/);
+  assert.notEqual(res.normalized.sbd, '10000000');
+  assert.equal(res.normalized.phone, '');
+  assert.equal(res.normalized.email, '');
+});
+
+test('validateCandidateForm accepts returning 8-digit SBD and masks optional phone/email', () => {
+  const res = validateCandidateForm(
+    {
+      school: SCHOOLS[0],
+      sbd: '26481930',
       phone: '0912 345 678',
       email: 'HocSinh@gmail.com ',
     },
@@ -30,14 +53,17 @@ test('validateCandidateForm accepts valid school, Vietnamese phone, and email', 
   );
   assert.equal(res.valid, true);
   assert.deepEqual(res.errors, {});
-  assert.equal(res.normalized.phone, '0912345678');
-  assert.equal(res.normalized.email, 'hocsinh@gmail.com');
+  assert.equal(res.isNewlyGeneratedSbd, false);
+  assert.equal(res.normalized.sbd, '26481930');
+  assert.equal(res.normalized.phone, '091***5678');
+  assert.equal(res.normalized.email, 'ho***@gmail.com');
 });
 
-test('validateCandidateForm rejects invalid school, phone, and email', () => {
+test('validateCandidateForm rejects invalid school, malformed SBD, and invalid optional phone/email', () => {
   const res = validateCandidateForm(
     {
       school: 'Trường không tồn tại',
+      sbd: '1234',
       phone: '12345',
       email: 'sai-dinh-dang',
     },
@@ -45,8 +71,17 @@ test('validateCandidateForm rejects invalid school, phone, and email', () => {
   );
   assert.equal(res.valid, false);
   assert.ok(res.errors.school);
+  assert.ok(res.errors.sbd);
   assert.ok(res.errors.phone);
   assert.ok(res.errors.email);
+});
+
+test('generateUniqueSbd skips colliding 8-digit numbers', () => {
+  const calls = [0, 0, 0.5];
+  let idx = 0;
+  const sbd = generateUniqueSbd(['10000000'], () => calls[idx++] ?? 0.5);
+  assert.match(sbd, /^[0-9]{8}$/);
+  assert.notEqual(sbd, '10000000');
 });
 
 test('generateExam strictly follows official Part I & Part II matrix across multiple runs', () => {
@@ -120,14 +155,16 @@ test('gradeExam calculates exact MOET Part I + Part II partial scores and detect
   }
 
   const perfectResult = gradeExam(exam, perfectAnswers, {
+    sbd: '12345678',
     school: SCHOOLS[0],
-    phone: '0912345678',
-    email: 'hs@vinhlong.edu.vn',
+    phone: '',
+    email: '',
     durationSpentSeconds: 1200,
     violations: 0,
     autoSubmittedReason: null,
   });
 
+  assert.equal(perfectResult.sbd, '12345678');
   assert.equal(perfectResult.part1Score, 6);
   assert.equal(perfectResult.part2Score, 4);
   assert.equal(perfectResult.totalScore, 10);
@@ -152,6 +189,7 @@ test('gradeExam calculates exact MOET Part I + Part II partial scores and detect
   });
 
   const partialResult = gradeExam(exam, partialAnswers, {
+    sbd: '87654321',
     school: SCHOOLS[1],
     phone: '0987654321',
     email: 'hs2@vinhlong.edu.vn',
@@ -165,4 +203,6 @@ test('gradeExam calculates exact MOET Part I + Part II partial scores and detect
   assert.equal(partialResult.totalScore, Math.round((partialResult.part1Score + 0.85) * 100) / 100);
   assert.ok(partialResult.weakTopics.includes(1));
   assert.equal(partialResult.autoSubmittedReason, 'violations');
+  assert.equal(partialResult.phone, '098***4321');
+  assert.equal(partialResult.email, 'hs***@vinhlong.edu.vn');
 });

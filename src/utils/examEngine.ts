@@ -21,6 +21,7 @@ import {
 
 export interface CandidateInfo {
   school: string;
+  sbd: string;
   phone: string;
   email: string;
 }
@@ -29,19 +30,84 @@ export interface ValidationResult {
   valid: boolean;
   errors: Partial<Record<keyof CandidateInfo, string>>;
   normalized: CandidateInfo;
+  isNewlyGeneratedSbd: boolean;
 }
 
 export function normalizePhone(raw: string): string {
   return raw.replace(/[\s.-]/g, '').trim();
 }
 
+export function normalizeSbd(raw: string): string {
+  return raw.replace(/\s+/g, '').trim();
+}
+
+export function isValidSbdFormat(sbd: string): boolean {
+  return /^[0-9]{8}$/.test(sbd);
+}
+
+export function maskPhone(raw?: string): string {
+  const cleaned = normalizePhone(raw ?? '');
+  if (!cleaned) return '';
+  if (cleaned.includes('***')) return cleaned.slice(0, 20);
+  if (cleaned.length <= 4) return '***';
+  if (cleaned.length <= 7) {
+    return `${cleaned.slice(0, 2)}***${cleaned.slice(-2)}`;
+  }
+  return `${cleaned.slice(0, 3)}***${cleaned.slice(-4)}`;
+}
+
+export function maskEmail(raw?: string): string {
+  const cleaned = (raw ?? '').trim().toLowerCase();
+  if (!cleaned) return '';
+  if (cleaned.includes('***@')) return cleaned.slice(0, 160);
+  const atIdx = cleaned.indexOf('@');
+  if (atIdx <= 0) return '***';
+  const local = cleaned.slice(0, atIdx);
+  const domain = cleaned.slice(atIdx + 1);
+  const visibleLocal = local.length <= 2 ? local.slice(0, 1) : local.slice(0, 2);
+  return `${visibleLocal}***@${domain}`.slice(0, 160);
+}
+
+/**
+ * Sinh ngẫu nhiên Số báo danh gồm đúng 8 chữ số (10000000–99999999) chưa trùng với tập đã cấp.
+ */
+export function generateUniqueSbd(
+  existingSbds: Iterable<string>,
+  rng: () => number = Math.random
+): string {
+  const used = new Set<string>();
+  for (const code of existingSbds) {
+    if (code) used.add(code.trim());
+  }
+
+  for (let i = 0; i < 1000; i++) {
+    const num = 10_000_000 + Math.floor(rng() * 90_000_000);
+    const candidate = String(num);
+    if (!used.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  for (let fallback = 10_000_000; fallback <= 99_999_999; fallback++) {
+    const candidate = String(fallback);
+    if (!used.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  return String(10_000_000 + Math.floor(Math.random() * 90_000_000));
+}
+
 export function validateCandidateForm(
   input: CandidateInfo,
-  allowedSchools: string[]
+  allowedSchools: string[],
+  existingSbds: Iterable<string> = [],
+  rng: () => number = Math.random
 ): ValidationResult {
   const school = input.school.trim();
-  const phone = normalizePhone(input.phone);
-  const email = input.email.trim();
+  const rawSbd = normalizeSbd(input.sbd ?? '');
+  const phone = normalizePhone(input.phone ?? '');
+  const email = (input.email ?? '').trim();
   const errors: Partial<Record<keyof CandidateInfo, string>> = {};
 
   if (!school) {
@@ -50,22 +116,35 @@ export function validateCandidateForm(
     errors.school = 'Tên trường không nằm trong danh sách sở giáo dục.';
   }
 
-  if (!phone) {
-    errors.phone = 'Vui lòng nhập số điện thoại.';
-  } else if (!/^(0|\+?84)[0-9]{8,10}$/.test(phone)) {
-    errors.phone = 'Số điện thoại không hợp lệ (gồm 9–11 chữ số, bắt đầu bằng 0 hoặc +84).';
+  let resolvedSbd = rawSbd;
+  let isNewlyGeneratedSbd = false;
+
+  if (!rawSbd) {
+    resolvedSbd = generateUniqueSbd(existingSbds, rng);
+    isNewlyGeneratedSbd = true;
+  } else if (!isValidSbdFormat(rawSbd)) {
+    errors.sbd = 'Số báo danh phải gồm đúng 8 chữ số (ví dụ: 26481930) hoặc để trống để hệ thống cấp mới.';
   }
 
-  if (!email) {
-    errors.email = 'Vui lòng nhập địa chỉ email.';
-  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
-    errors.email = 'Địa chỉ email không đúng định dạng (ví dụ: hocsinh@gmail.com).';
+  // SĐT và Email là thông tin bảo mật, KHÔNG bắt buộc nhập; nếu có nhập thì kiểm tra định dạng
+  if (phone && !phone.includes('***') && !/^(0|\+?84)[0-9]{8,10}$/.test(phone)) {
+    errors.phone = 'Số điện thoại không hợp lệ (gồm 9–11 chữ số, bắt đầu bằng 0 hoặc +84) hoặc có thể để trống.';
+  }
+
+  if (email && !email.includes('***@') && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+    errors.email = 'Địa chỉ email không đúng định dạng (ví dụ: hocsinh@gmail.com) hoặc có thể để trống.';
   }
 
   return {
     valid: Object.keys(errors).length === 0,
     errors,
-    normalized: { school, phone, email: email.toLowerCase() },
+    normalized: {
+      school,
+      sbd: resolvedSbd,
+      phone: phone ? maskPhone(phone) : '',
+      email: email ? maskEmail(email) : '',
+    },
+    isNewlyGeneratedSbd: Object.keys(errors).length === 0 && isNewlyGeneratedSbd,
   };
 }
 
@@ -303,9 +382,10 @@ function roundScore(n: number): number {
 
 export interface GradeExamMeta {
   attemptId?: string;
+  sbd: string;
   school: string;
-  phone: string;
-  email: string;
+  phone?: string;
+  email?: string;
   submittedAt?: string;
   durationSpentSeconds: number;
   violations: number;
@@ -419,12 +499,16 @@ export function gradeExam(
   const submittedAt = meta.submittedAt ?? new Date().toISOString();
   const attemptId =
     meta.attemptId ?? `ATT-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+  const cleanSbd = isValidSbdFormat(normalizeSbd(meta.sbd))
+    ? normalizeSbd(meta.sbd)
+    : generateUniqueSbd([]);
 
   return {
     id: attemptId,
+    sbd: cleanSbd,
     school: meta.school.trim(),
-    phone: normalizePhone(meta.phone),
-    email: meta.email.trim().toLowerCase(),
+    phone: maskPhone(meta.phone),
+    email: maskEmail(meta.email),
     submittedAt,
     durationSpentSeconds: Math.max(0, Math.round(meta.durationSpentSeconds)),
     violations: meta.violations,

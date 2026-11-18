@@ -2,24 +2,33 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertCircle,
   BookOpen,
+  CheckCircle2,
   Clock,
   Eye,
+  Hash,
   History,
+  Lock,
   Mail,
   Phone,
   Play,
+  RotateCcw,
   School,
   Search,
   ShieldAlert,
 } from 'lucide-react';
 import { SCHOOLS } from '../data/schools';
 import { AttemptRecord } from '../types/exam';
-import { CandidateInfo, validateCandidateForm } from '../utils/examEngine';
+import {
+  CandidateInfo,
+  isValidSbdFormat,
+  normalizeSbd,
+  validateCandidateForm,
+} from '../utils/examEngine';
 
 interface ExamSetupViewProps {
   initialCandidate: CandidateInfo;
   attempts: AttemptRecord[];
-  onStartExam: (candidate: CandidateInfo) => void;
+  onStartExam: (candidate: CandidateInfo, isNewlyGeneratedSbd: boolean) => void;
   onReviewAttempt: (attempt: AttemptRecord) => void;
 }
 
@@ -30,6 +39,7 @@ export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
   onReviewAttempt,
 }) => {
   const [school, setSchool] = useState(initialCandidate.school);
+  const [sbd, setSbd] = useState(initialCandidate.sbd);
   const [phone, setPhone] = useState(initialCandidate.phone);
   const [email, setEmail] = useState(initialCandidate.email);
   const [schoolFilter, setSchoolFilter] = useState('');
@@ -42,37 +52,63 @@ export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
     return SCHOOLS.filter((s) => s.toLowerCase().includes(q));
   }, [schoolFilter]);
 
+  const existingSbds = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of attempts) {
+      if (a.sbd && isValidSbdFormat(a.sbd)) {
+        set.add(a.sbd);
+      }
+    }
+    return set;
+  }, [attempts]);
+
+  const normalizedInputSbd = useMemo(() => normalizeSbd(sbd), [sbd]);
+
+  const matchedAttemptsBySbd = useMemo(() => {
+    if (!isValidSbdFormat(normalizedInputSbd)) return [];
+    return attempts.filter((a) => a.sbd === normalizedInputSbd);
+  }, [attempts, normalizedInputSbd]);
+
   const myAndDeviceAttempts = useMemo(() => {
-    const nonSeed = attempts.filter((a) => !a.isSeedData);
-    const base = nonSeed.length > 0 ? nonSeed : attempts;
-
     if (historyScope === 'device') {
-      return base.slice(0, 20);
+      return attempts.slice(0, 20);
     }
 
-    const normEmail = email.trim().toLowerCase();
-    const normPhone = phone.replace(/[\s.-]/g, '').trim();
-    if (!normEmail && !normPhone) {
-      return nonSeed.slice(0, 10);
+    if (isValidSbdFormat(normalizedInputSbd)) {
+      return matchedAttemptsBySbd.slice(0, 20);
     }
-    return attempts
-      .filter(
-        (a) =>
-          (normEmail && a.email.toLowerCase() === normEmail) ||
-          (normPhone && a.phone === normPhone)
-      )
-      .slice(0, 20);
-  }, [attempts, email, phone, historyScope]);
+    return [];
+  }, [attempts, historyScope, matchedAttemptsBySbd, normalizedInputSbd]);
+
+  const handleSbdChange = (rawVal: string) => {
+    const digitsOnly = rawVal.replace(/\D/g, '').slice(0, 8);
+    setSbd(digitsOnly);
+    if (errors.sbd) setErrors((prev) => ({ ...prev, sbd: undefined }));
+
+    // Nếu thí sinh nhập đủ 8 ký số khớp lịch sử trên Cloud/thiết bị và chưa chọn trường -> tự điền trường
+    if (digitsOnly.length === 8) {
+      const matched = attempts.find((a) => a.sbd === digitsOnly);
+      if (matched && !school) {
+        setSchool(matched.school);
+        setErrors((prev) => ({ ...prev, school: undefined }));
+      }
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const result = validateCandidateForm({ school, phone, email }, SCHOOLS);
+    const result = validateCandidateForm(
+      { school, sbd, phone, email },
+      SCHOOLS,
+      existingSbds
+    );
     if (!result.valid) {
       setErrors(result.errors);
       return;
     }
     setErrors({});
-    onStartExam(result.normalized);
+    setSbd(result.normalized.sbd);
+    onStartExam(result.normalized, result.isNewlyGeneratedSbd);
   };
 
   return (
@@ -86,10 +122,10 @@ export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
         >
           <div className="px-6 py-5 border-b border-slate-200 bg-slate-50/70">
             <h2 id="exam-setup-heading" className="text-lg font-bold text-slate-900">
-              Thông tin thí sinh & Lấy đề ngẫu nhiên
+              Thông tin thí sinh &amp; Lấy đề ngẫu nhiên
             </h2>
             <p className="mt-1 text-sm text-slate-600">
-              Chọn trường đang theo học, nhập số điện thoại và email để bắt đầu làm bài ôn tập chuẩn ma trận Sở GD&amp;ĐT.
+              Thi lần đầu: chọn Trường và <strong>để trống Số báo danh</strong> để hệ thống tự cấp mã 8 chữ số bảo mật. Từ lần 2 trở đi: nhập lại SBD đã cấp để ghi nhận lịch sử làm bài.
             </p>
           </div>
 
@@ -145,76 +181,167 @@ export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
               )}
             </div>
 
-            {/* Phone + Email 2 columns */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
+            {/* Số báo danh 8 ký số */}
+            <div className="p-4 rounded-xl bg-blue-50/50 border border-blue-200/80 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <label
-                  htmlFor="candidate-phone"
-                  className="block text-sm font-semibold text-slate-800 mb-1.5"
+                  htmlFor="candidate-sbd"
+                  className="block text-sm font-semibold text-slate-900"
                 >
-                  Số điện thoại <span className="text-rose-700">*</span>
+                  Số báo danh (SBD — 8 chữ số)
                 </label>
-                <div className="relative">
-                  <Phone className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    id="candidate-phone"
-                    type="tel"
-                    value={phone}
-                    onChange={(e) => {
-                      setPhone(e.target.value);
-                      if (errors.phone) setErrors((prev) => ({ ...prev, phone: undefined }));
+                {sbd && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSbd('');
+                      setErrors((prev) => ({ ...prev, sbd: undefined }));
                     }}
-                    placeholder="0912345678"
-                    aria-invalid={Boolean(errors.phone)}
-                    className={`w-full pl-9 pr-3 py-2.5 text-sm bg-white border rounded-lg text-slate-900 tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 ${
-                      errors.phone ? 'border-rose-500' : 'border-slate-300'
-                    }`}
-                  />
-                </div>
-                {errors.phone && (
-                  <p className="mt-1.5 text-xs font-medium text-rose-700 flex items-center gap-1">
-                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                    <span>{errors.phone}</span>
-                  </p>
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:underline cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Xóa để cấp SBD mới</span>
+                  </button>
                 )}
               </div>
 
-              <div>
-                <label
-                  htmlFor="candidate-email"
-                  className="block text-sm font-semibold text-slate-800 mb-1.5"
-                >
-                  Địa chỉ email <span className="text-rose-700">*</span>
-                </label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    id="candidate-email"
-                    type="email"
-                    value={email}
-                    onChange={(e) => {
-                      setEmail(e.target.value);
-                      if (errors.email) setErrors((prev) => ({ ...prev, email: undefined }));
-                    }}
-                    placeholder="hocsinh@gmail.com"
-                    aria-invalid={Boolean(errors.email)}
-                    className={`w-full pl-9 pr-3 py-2.5 text-sm bg-white border rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 ${
-                      errors.email ? 'border-rose-500' : 'border-slate-300'
-                    }`}
-                  />
-                </div>
-                {errors.email && (
-                  <p className="mt-1.5 text-xs font-medium text-rose-700 flex items-center gap-1">
-                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                    <span>{errors.email}</span>
-                  </p>
-                )}
+              <div className="relative">
+                <Hash className="w-4 h-4 text-blue-600 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  id="candidate-sbd"
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={8}
+                  value={sbd}
+                  onChange={(e) => handleSbdChange(e.target.value)}
+                  placeholder="Để trống nếu thi lần đầu (tự cấp 8 chữ số) — hoặc nhập SBD cũ"
+                  aria-invalid={Boolean(errors.sbd)}
+                  className={`w-full pl-9 pr-3 py-2.5 text-sm font-mono font-bold tracking-wider bg-white border rounded-lg text-slate-900 tabular-nums placeholder:font-sans placeholder:font-normal placeholder:tracking-normal placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 ${
+                    errors.sbd ? 'border-rose-500' : 'border-slate-300'
+                  }`}
+                />
               </div>
+
+              {errors.sbd ? (
+                <p className="text-xs font-medium text-rose-700 flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{errors.sbd}</span>
+                </p>
+              ) : isValidSbdFormat(normalizedInputSbd) ? (
+                matchedAttemptsBySbd.length > 0 ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+                    <span className="flex items-center gap-1.5 font-semibold">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                      <span>
+                        Đã nhận dạng SBD {normalizedInputSbd} ({matchedAttemptsBySbd.length} lượt thi trước · {matchedAttemptsBySbd[0].school})
+                      </span>
+                    </span>
+                    {school !== matchedAttemptsBySbd[0].school && (
+                      <button
+                        type="button"
+                        onClick={() => setSchool(matchedAttemptsBySbd[0].school)}
+                        className="font-bold text-emerald-800 underline cursor-pointer"
+                      >
+                        Chọn trường này
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-blue-900">
+                    Sử dụng SBD <strong className="font-mono">{normalizedInputSbd}</strong> cho bài thi này.
+                  </p>
+                )
+              ) : (
+                <p className="text-xs text-slate-600">
+                  <strong>Lần đầu thi:</strong> bỏ trống ô này, hệ thống sẽ tự cấp riêng 1 SBD gồm 8 chữ số không trùng lặp.{' '}
+                  <strong>Lần thứ 2 trở đi:</strong> gõ lại đúng SBD 8 chữ số đã nhận ở lần trước.
+                </p>
+              )}
+            </div>
+
+            {/* Optional & Protected Contact Info */}
+            <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
+              <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                <Lock className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                <span>
+                  Bảo mật thông tin cá nhân — Số điện thoại và Email{' '}
+                  <span className="text-emerald-800 font-bold">(Không bắt buộc nhập)</span>
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label
+                    htmlFor="candidate-phone"
+                    className="block text-xs font-semibold text-slate-700 mb-1.5"
+                  >
+                    Số điện thoại <span className="text-slate-400 font-normal">(Không bắt buộc)</span>
+                  </label>
+                  <div className="relative">
+                    <Phone className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      id="candidate-phone"
+                      type="tel"
+                      value={phone}
+                      onChange={(e) => {
+                        setPhone(e.target.value);
+                        if (errors.phone) setErrors((prev) => ({ ...prev, phone: undefined }));
+                      }}
+                      placeholder="Không bắt buộc (được che ẩn)"
+                      aria-invalid={Boolean(errors.phone)}
+                      className={`w-full pl-9 pr-3 py-2 text-sm bg-white border rounded-lg text-slate-900 tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 ${
+                        errors.phone ? 'border-rose-500' : 'border-slate-300'
+                      }`}
+                    />
+                  </div>
+                  {errors.phone && (
+                    <p className="mt-1.5 text-xs font-medium text-rose-700 flex items-center gap-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{errors.phone}</span>
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="candidate-email"
+                    className="block text-xs font-semibold text-slate-700 mb-1.5"
+                  >
+                    Địa chỉ email <span className="text-slate-400 font-normal">(Không bắt buộc)</span>
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      id="candidate-email"
+                      type="email"
+                      value={email}
+                      onChange={(e) => {
+                        setEmail(e.target.value);
+                        if (errors.email) setErrors((prev) => ({ ...prev, email: undefined }));
+                      }}
+                      placeholder="Không bắt buộc (được che ẩn)"
+                      aria-invalid={Boolean(errors.email)}
+                      className={`w-full pl-9 pr-3 py-2 text-sm bg-white border rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 ${
+                        errors.email ? 'border-rose-500' : 'border-slate-300'
+                      }`}
+                    />
+                  </div>
+                  {errors.email && (
+                    <p className="mt-1.5 text-xs font-medium text-rose-700 flex items-center gap-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{errors.email}</span>
+                    </p>
+                  )}
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Nếu bạn nhập SĐT hoặc Email, hệ thống tự động che ẩn (ví dụ: 091***5678) trước khi đồng bộ lên đám mây.
+              </p>
             </div>
 
             <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-slate-100">
               <p className="text-xs text-slate-500">
-                Thí sinh được thi thử không giới hạn số lần. Hệ thống tự lưu lịch sử bài làm.
+                Thí sinh được thi thử không giới hạn số lần. Hệ thống tự lưu lịch sử theo SBD.
               </p>
               <button
                 type="submit"
@@ -309,7 +436,7 @@ export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Theo SĐT / Email đang nhập
+              Theo SBD đang nhập
             </button>
             <button
               type="button"
@@ -327,7 +454,9 @@ export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
 
         {myAndDeviceAttempts.length === 0 ? (
           <div className="px-6 py-8 text-center text-sm text-slate-500">
-            Chưa có lượt làm bài nào khớp với thông tin hiện tại. Hãy chọn trường, nhập SĐT, email và nhấn &ldquo;Lấy đề ngẫu nhiên&rdquo; để bắt đầu.
+            {historyScope === 'mine' && !isValidSbdFormat(normalizedInputSbd)
+              ? 'Chưa nhập Số báo danh (8 chữ số). Nếu thi lần đầu, hãy chọn trường và nhấn "Lấy đề ngẫu nhiên" để nhận SBD tự động.'
+              : 'Chưa có lượt làm bài nào khớp với Số báo danh / phạm vi hiện tại.'}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -335,7 +464,7 @@ export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600">
                   <th className="py-3 px-4">Thời điểm nộp</th>
-                  <th className="py-3 px-4">Thí sinh / Trường</th>
+                  <th className="py-3 px-4">Số báo danh / Trường</th>
                   <th className="py-3 px-4 text-right">Phần I</th>
                   <th className="py-3 px-4 text-right">Phần II</th>
                   <th className="py-3 px-4 text-right">Tổng điểm</th>
@@ -360,8 +489,8 @@ export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
                       )}
                     </td>
                     <td className="py-3 px-4">
-                      <p className="font-semibold text-slate-900 text-xs sm:text-sm">
-                        {att.email} · <span className="tabular-nums">{att.phone}</span>
+                      <p className="font-mono font-bold text-blue-800 text-xs sm:text-sm tabular-nums">
+                        SBD: {att.sbd}
                       </p>
                       <p className="text-xs text-slate-500 truncate max-w-[260px]">{att.school}</p>
                     </td>

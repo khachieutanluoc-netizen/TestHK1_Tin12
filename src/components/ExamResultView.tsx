@@ -3,11 +3,15 @@ import {
   AlertTriangle,
   ArrowLeft,
   Award,
+  Check,
   CheckCircle2,
   Cloud,
   CloudUpload,
+  Copy,
   Filter,
+  Hash,
   History,
+  Lock,
   RotateCcw,
   XCircle,
 } from 'lucide-react';
@@ -18,6 +22,7 @@ import { CodeSnippetText } from './CodeSnippetText';
 interface ExamResultViewProps {
   attempt: AttemptRecord;
   studentHistory: AttemptRecord[];
+  isNewlyGeneratedSbd?: boolean;
   canSyncDrive: boolean;
   isSyncingDrive: boolean;
   onSelectHistoryAttempt: (attempt: AttemptRecord) => void;
@@ -36,6 +41,7 @@ function formatDurationSpent(secs: number): string {
 export const ExamResultView: React.FC<ExamResultViewProps> = ({
   attempt,
   studentHistory,
+  isNewlyGeneratedSbd = false,
   canSyncDrive,
   isSyncingDrive,
   onSelectHistoryAttempt,
@@ -45,6 +51,17 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
   onBackToSetup,
 }) => {
   const [filterMode, setFilterMode] = useState<'all' | 'incorrect'>('all');
+  const [copiedSbd, setCopiedSbd] = useState(false);
+
+  const handleCopySbd = async () => {
+    try {
+      await navigator.clipboard.writeText(attempt.sbd);
+      setCopiedSbd(true);
+      window.setTimeout(() => setCopiedSbd(false), 3000);
+    } catch {
+      // Bỏ qua nếu trình duyệt chặn clipboard API
+    }
+  };
 
   const part1Summary = useMemo(() => {
     let correct = 0;
@@ -98,6 +115,66 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
             <span>Thi lại (Lấy đề ngẫu nhiên mới)</span>
           </button>
         </div>
+      </div>
+
+      {/* Prominent 8-digit SBD Card & Next-Attempt Reminder */}
+      <div
+        data-testid="result-sbd-banner"
+        className={`rounded-xl border p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+          isNewlyGeneratedSbd
+            ? 'bg-blue-50 border-blue-300 text-blue-950'
+            : 'bg-slate-50 border-slate-200 text-slate-900'
+        }`}
+      >
+        <div className="flex items-start gap-3">
+          <div className="p-2.5 rounded-lg bg-blue-700 text-white shrink-0">
+            <Hash className="w-5 h-5" />
+          </div>
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-blue-800">
+                {isNewlyGeneratedSbd
+                  ? 'Hệ thống đã cấp Số báo danh mới cho bạn'
+                  : 'Số báo danh thí sinh'}
+              </span>
+              <span
+                data-testid="result-sbd-code"
+                className="px-2.5 py-0.5 rounded-md bg-white border border-blue-300 font-mono text-lg font-extrabold text-blue-800 tracking-widest tabular-nums"
+              >
+                {attempt.sbd}
+              </span>
+            </div>
+            <p className="text-xs sm:text-sm text-slate-700 leading-relaxed">
+              {isNewlyGeneratedSbd ? (
+                <>
+                  Vui lòng <strong>ghi nhớ hoặc lưu lại SBD {attempt.sbd}</strong> (8 chữ số). Ở những lần ôn tập tiếp theo hoặc khi truy cập từ thiết bị khác, bạn chỉ cần nhập lại SBD này để hệ thống nhận dạng và lưu nối tiếp lịch sử làm bài.
+                </>
+              ) : (
+                <>
+                  Lần sau truy cập hoặc thi lại, bạn tiếp tục khai đúng Số báo danh <strong className="font-mono">{attempt.sbd}</strong> để hệ thống tổng hợp lịch sử các lần làm bài của bạn.
+                </>
+              )}
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleCopySbd}
+          className="inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs sm:text-sm font-bold text-blue-800 bg-white hover:bg-blue-100 border border-blue-300 rounded-lg transition-colors cursor-pointer shrink-0"
+        >
+          {copiedSbd ? (
+            <>
+              <Check className="w-4 h-4 text-emerald-700" />
+              <span className="text-emerald-800">Đã sao chép {attempt.sbd}</span>
+            </>
+          ) : (
+            <>
+              <Copy className="w-4 h-4" />
+              <span>Sao chép SBD</span>
+            </>
+          )}
+        </button>
       </div>
 
       {/* Auto-submission alert if applicable */}
@@ -185,8 +262,17 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
 
           <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 text-xs space-y-1">
             <p className="font-bold text-slate-800">{attempt.school}</p>
-            <p className="text-slate-600">
-              {attempt.email} · <span className="tabular-nums">{attempt.phone}</span>
+            <p className="text-slate-700">
+              <span className="font-semibold">Số báo danh (SBD):</span>{' '}
+              <span className="font-mono font-bold text-blue-800 tabular-nums">{attempt.sbd}</span>
+            </p>
+            <p className="text-slate-600 flex items-center gap-1.5">
+              <Lock className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+              <span>
+                {attempt.email || attempt.phone
+                  ? [attempt.email, attempt.phone].filter(Boolean).join(' · ')
+                  : 'SĐT & Email: Bảo mật (không công khai)'}
+              </span>
             </p>
             <p className="text-slate-500">
               Nộp lúc: {new Date(attempt.submittedAt).toLocaleString('vi-VN')} · Vi phạm: {attempt.violations} lần

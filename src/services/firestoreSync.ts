@@ -10,6 +10,7 @@ import {
   where,
 } from 'firebase/firestore';
 import { AttemptRecord } from '../types/exam';
+import { isValidSbdFormat } from '../utils/examEngine';
 import {
   normalizeAttemptForFirestore,
   sanitizeAttemptDocId,
@@ -96,6 +97,8 @@ function parseSnapshotDoc(raw: unknown): AttemptRecord | null {
   const rec = raw as Partial<AttemptRecord>;
   if (
     typeof rec.id !== 'string' ||
+    typeof rec.sbd !== 'string' ||
+    !isValidSbdFormat(rec.sbd) ||
     !rec.exam ||
     !Array.isArray(rec.lessonBreakdown) ||
     rec.isSeedData === true
@@ -104,6 +107,8 @@ function parseSnapshotDoc(raw: unknown): AttemptRecord | null {
   }
   return {
     ...(rec as AttemptRecord),
+    phone: typeof rec.phone === 'string' ? rec.phone : '',
+    email: typeof rec.email === 'string' ? rec.email : '',
     syncedToDrive: Boolean(rec.syncedToDrive),
     isSeedData: false,
   };

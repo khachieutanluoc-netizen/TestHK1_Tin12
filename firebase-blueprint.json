@@ -2,7 +2,7 @@
   "entities": {
     "Attempt": {
       "title": "AttemptRecord",
-      "description": "Một lượt thi thử của học sinh được chấm điểm và đồng bộ đa thiết bị.",
+      "description": "Một lượt thi thử của học sinh được định danh bằng Số báo danh 8 chữ số, chấm điểm và đồng bộ đa thiết bị.",
       "type": "object",
       "properties": {
         "id": {
@@ -12,6 +12,13 @@
           "maxLength": 128,
           "description": "Mã duy nhất của lượt thi"
         },
+        "sbd": {
+          "type": "string",
+          "pattern": "^[0-9]{8}$",
+          "minLength": 8,
+          "maxLength": 8,
+          "description": "Số báo danh gồm đúng 8 chữ số do hệ thống cấp hoặc thí sinh nhập lại"
+        },
         "school": {
           "type": "string",
           "minLength": 3,
@@ -20,15 +27,15 @@
         },
         "phone": {
           "type": "string",
-          "minLength": 8,
+          "minLength": 0,
           "maxLength": 20,
-          "description": "Số điện thoại thí sinh"
+          "description": "Số điện thoại thí sinh (không bắt buộc, được che giấu/bảo mật)"
         },
         "email": {
           "type": "string",
-          "minLength": 5,
+          "minLength": 0,
           "maxLength": 160,
-          "description": "Email thí sinh"
+          "description": "Email thí sinh (không bắt buộc, được che giấu/bảo mật)"
         },
         "submittedAt": {
           "type": "string",
@@ -89,11 +96,12 @@
         },
         "isSeedData": {
           "type": "boolean",
-          "description": "Đánh dấu dữ liệu mẫu (luôn false trên Firestore)"
+          "description": "Cờ dữ liệu mẫu (luôn false)"
         }
       },
       "required": [
         "id",
+        "sbd",
         "school",
         "phone",
         "email",
@@ -119,7 +127,7 @@
       "schema": {
         "$ref": "#/entities/Attempt"
       },
-      "description": "Kho lưu trữ kết quả bài thi thực tế đồng bộ thời gian thực trên mọi thiết bị"
+      "description": "Kho lưu trữ kết quả bài thi thực tế định danh bằng SBD 8 chữ số, đồng bộ thời gian thực trên mọi thiết bị"
     }
   }
 }

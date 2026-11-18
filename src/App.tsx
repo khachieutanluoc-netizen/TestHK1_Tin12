@@ -7,6 +7,7 @@ import { DashboardView } from './components/DashboardView';
 import { ExamResultView } from './components/ExamResultView';
 import { ExamSetupView } from './components/ExamSetupView';
 import { AppTab, Header } from './components/Header';
+import { LessonPracticeView } from './components/LessonPracticeView';
 import { ALL_D1_QUESTIONS, ALL_D2_QUESTIONS } from './data/questionBank';
 import {
   DRIVE_TARGET_FOLDER_URL,
@@ -72,8 +73,10 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('exam');
   const [examMode, setExamMode] = useState<ExamMode>('setup');
   const [candidate, setCandidate] = useState<CandidateInfo>(
-    () => loadSavedCandidate() ?? { school: '', phone: '', email: '' }
+    () => loadSavedCandidate() ?? { school: '', sbd: '', phone: '', email: '' }
   );
+  const [isNewlyGeneratedSbd, setIsNewlyGeneratedSbd] = useState<boolean>(false);
+  const activeExamCandidateRef = useRef<CandidateInfo>(candidate);
   const [attempts, setAttempts] = useState<AttemptRecord[]>(() => loadAttempts());
   const attemptsRef = useRef<AttemptRecord[]>(attempts);
   attemptsRef.current = attempts;
@@ -310,12 +313,7 @@ export default function App() {
 
   const studentHistory = useMemo(() => {
     if (!selectedAttempt) return [];
-    return attempts.filter(
-      (a) =>
-        a.school === selectedAttempt.school &&
-        a.phone === selectedAttempt.phone &&
-        a.email.toLowerCase() === selectedAttempt.email.toLowerCase()
-    );
+    return attempts.filter((a) => a.sbd === selectedAttempt.sbd);
   }, [attempts, selectedAttempt]);
 
   // Đồng bộ 2 chiều với Google Drive (tải về + đẩy bài thiếu lên Drive) rồi đồng bộ Cloud Firestore & máy chủ
@@ -539,8 +537,13 @@ export default function App() {
     }
   }, [runDriveTwoWaySync, syncWithCloud]);
 
-  const handleStartExam = (validatedCandidate: CandidateInfo) => {
+  const handleStartExam = (
+    validatedCandidate: CandidateInfo,
+    newlyGeneratedSbd = false
+  ) => {
     setCandidate(validatedCandidate);
+    activeExamCandidateRef.current = validatedCandidate;
+    setIsNewlyGeneratedSbd(newlyGeneratedSbd);
     saveCandidate(validatedCandidate);
     const exam = generateExam(ALL_D1_QUESTIONS, ALL_D2_QUESTIONS);
     setCurrentExam(exam);
@@ -558,10 +561,12 @@ export default function App() {
       autoSubmittedReason: 'timeout' | 'violations' | null
     ) => {
       if (!currentExam) return;
+      const examCandidate = activeExamCandidateRef.current;
       const graded = gradeExam(currentExam, answers, {
-        school: candidate.school,
-        phone: candidate.phone,
-        email: candidate.email,
+        sbd: examCandidate.sbd,
+        school: examCandidate.school,
+        phone: examCandidate.phone,
+        email: examCandidate.email,
         durationSpentSeconds,
         violations,
         autoSubmittedReason,
@@ -626,24 +631,26 @@ export default function App() {
         );
       }
     },
-    [candidate, commitAttempts, currentExam, showBanner]
+    [commitAttempts, currentExam, showBanner]
   );
 
   const handleTabSwitch = (nextTab: AppTab) => {
     if (nextTab === activeTab) return;
-    if (examMode === 'active' && nextTab === 'dashboard') {
+    if (examMode === 'active' && nextTab !== 'exam') {
       setPendingConfirm({
         title: 'Đang trong thời gian làm bài thi',
         message:
-          'Bạn đang có bài thi thử đang diễn ra. Nếu chuyển sang Dashboard Thống kê lúc này, bài thi hiện tại sẽ bị hủy bỏ và không tính điểm.\nBạn có chắc chắn muốn rời khỏi bài thi không?',
+          'Bạn đang có bài thi thử đang diễn ra. Nếu chuyển sang thẻ khác lúc này, bài thi hiện tại sẽ bị hủy bỏ và không tính điểm.\nBạn có chắc chắn muốn rời khỏi bài thi không?',
         confirmLabel: 'Rời khỏi bài thi',
         tone: 'danger',
         action: () => {
           setPendingConfirm(null);
           setCurrentExam(null);
           setExamMode('setup');
-          setActiveTab('dashboard');
-          void syncWithCloud({ silent: true, force: true });
+          setActiveTab(nextTab);
+          if (nextTab === 'dashboard') {
+            void syncWithCloud({ silent: true, force: true });
+          }
         },
       });
       return;
@@ -656,6 +663,7 @@ export default function App() {
 
   const handleReviewAttempt = (attempt: AttemptRecord) => {
     setSelectedAttemptId(attempt.id);
+    setIsNewlyGeneratedSbd(false);
     setExamMode('result');
     setActiveTab('exam');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -723,15 +731,17 @@ export default function App() {
             <ExamResultView
               attempt={selectedAttempt}
               studentHistory={studentHistory}
+              isNewlyGeneratedSbd={isNewlyGeneratedSbd}
               canSyncDrive={hasDriveToken}
               isSyncingDrive={isSyncingDrive}
               onSelectHistoryAttempt={(att) => {
                 setSelectedAttemptId(att.id);
+                setIsNewlyGeneratedSbd(false);
                 window.scrollTo({ top: 0, behavior: 'smooth' });
               }}
               onUploadSingleAttemptToDrive={handleUploadSingleAttemptToDrive}
               onSignInAndUploadDrive={handleSignInAndUploadDrive}
-              onStartNewExam={() => handleStartExam(candidate)}
+              onStartNewExam={() => handleStartExam(candidate, false)}
               onBackToSetup={() => {
                 setExamMode('setup');
                 window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -745,6 +755,11 @@ export default function App() {
               onReviewAttempt={handleReviewAttempt}
             />
           )
+        ) : activeTab === 'practice' ? (
+          <LessonPracticeView
+            d1Questions={ALL_D1_QUESTIONS}
+            d2Questions={ALL_D2_QUESTIONS}
+          />
         ) : (
           <DashboardView
             attempts={attempts}

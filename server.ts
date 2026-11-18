@@ -30,10 +30,9 @@ function loadStoreFromDisk(): void {
     const parsed = JSON.parse(raw) as unknown;
     if (Array.isArray(parsed)) {
       for (const item of parsed) {
-        if (item && typeof item === 'object' && typeof (item as AttemptRecord).id === 'string') {
-          const rec = item as AttemptRecord;
-          if (!rec.isSeedData) {
-            attemptsStore.set(rec.id, rec);
+        if (isValidAttemptPayload(item)) {
+          if (!item.isSeedData) {
+            attemptsStore.set(item.id, item);
           }
         }
       }
@@ -67,8 +66,9 @@ function isValidAttemptPayload(item: unknown): item is AttemptRecord {
   return (
     typeof r.id === 'string' &&
     r.id.length > 0 &&
+    typeof r.sbd === 'string' &&
+    /^[0-9]{8}$/.test(r.sbd) &&
     typeof r.school === 'string' &&
-    typeof r.email === 'string' &&
     typeof r.totalScore === 'number' &&
     typeof r.submittedAt === 'string' &&
     Boolean(r.exam) &&

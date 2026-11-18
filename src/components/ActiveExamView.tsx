@@ -196,12 +196,14 @@ export const ActiveExamView: React.FC<ActiveExamViewProps> = ({
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 font-medium">
             <span className="font-mono text-slate-700 font-semibold">{exam.examId}</span>
             <span>·</span>
-            <span className="truncate">{candidate.school}</span>
+            <span className="font-mono text-blue-700 font-bold tabular-nums">
+              SBD: {candidate.sbd}
+            </span>
             <span>·</span>
-            <span>{candidate.email}</span>
+            <span className="truncate">{candidate.school}</span>
           </div>
           <p className="mt-0.5 text-sm font-bold text-slate-900">
-            Bài thi thử Giữa HK1 Tin học 12 (Chế độ giám sát đang hoạt động)
+            Bài thi thử Học kỳ 1 Tin học 12 (Chế độ giám sát đang hoạt động)
           </p>
         </div>
 

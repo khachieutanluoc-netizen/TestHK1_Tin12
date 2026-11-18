@@ -12,6 +12,12 @@ service cloud.firestore {
         && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidSbd(sbd) {
+      return sbd is string
+        && sbd.size() == 8
+        && sbd.matches('^[0-9]{8}$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -26,23 +32,24 @@ service cloud.firestore {
 
     function isValidAttempt(data) {
       return data.keys().hasAll([
-          'id', 'school', 'phone', 'email', 'submittedAt',
+          'id', 'sbd', 'school', 'phone', 'email', 'submittedAt',
           'durationSpentSeconds', 'violations', 'autoSubmittedReason',
           'part1Score', 'part2Score', 'totalScore',
           'exam', 'answers', 'lessonBreakdown', 'weakTopics',
           'feedbackSummary', 'syncedToDrive', 'isSeedData'
         ])
         && data.keys().hasOnly([
-          'id', 'school', 'phone', 'email', 'submittedAt',
+          'id', 'sbd', 'school', 'phone', 'email', 'submittedAt',
           'durationSpentSeconds', 'violations', 'autoSubmittedReason',
           'part1Score', 'part2Score', 'totalScore',
           'exam', 'answers', 'lessonBreakdown', 'weakTopics',
           'feedbackSummary', 'syncedToDrive', 'isSeedData'
         ])
         && isValidId(data.id)
+        && isValidSbd(data.sbd)
         && data.school is string && data.school.size() >= 3 && data.school.size() <= 200
-        && data.phone is string && data.phone.size() >= 8 && data.phone.size() <= 20
-        && data.email is string && data.email.size() >= 5 && data.email.size() <= 160
+        && data.phone is string && data.phone.size() <= 20
+        && data.email is string && data.email.size() <= 160
         && data.submittedAt is string && data.submittedAt.size() >= 10 && data.submittedAt.size() <= 64
         && data.durationSpentSeconds is number && data.durationSpentSeconds >= 0 && data.durationSpentSeconds <= 7200
         && data.violations is int && data.violations >= 0 && data.violations <= 50
@@ -80,6 +87,7 @@ service cloud.firestore {
         && isValidId(attemptId)
         && isValidAttempt(incoming())
         && incoming().id == existing().id
+        && incoming().sbd == existing().sbd
         && incoming().school == existing().school
         && incoming().phone == existing().phone
         && incoming().email == existing().email

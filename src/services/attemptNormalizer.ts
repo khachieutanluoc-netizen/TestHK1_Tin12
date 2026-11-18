@@ -1,8 +1,17 @@
 import { AttemptRecord } from '../types/exam';
+import { isValidSbdFormat, maskEmail, maskPhone, normalizeSbd } from '../utils/examEngine';
 
 export function sanitizeAttemptDocId(rawId: string): string {
   const cleaned = rawId.replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 128);
   return cleaned.length >= 3 ? cleaned : `ATT-${cleaned.padEnd(3, '0')}`;
+}
+
+export function sanitizeAttemptSbd(rawSbd: string): string {
+  const norm = normalizeSbd(rawSbd ?? '');
+  if (isValidSbdFormat(norm)) return norm;
+  const digits = norm.replace(/\D/g, '').slice(0, 8);
+  if (digits.length === 8) return digits;
+  return digits.padStart(8, '1');
 }
 
 function clampNumber(val: unknown, min: number, max: number, roundInt = false): number {
@@ -12,17 +21,15 @@ function clampNumber(val: unknown, min: number, max: number, roundInt = false): 
 }
 
 /**
- * Chuẩn hóa bản ghi AttemptRecord khớp 100% với 18 trường trong firebase-blueprint.json & firestore.rules
- * (Loại bỏ mọi giá trị undefined để Firestore SDK không báo lỗi).
+ * Chuẩn hóa bản ghi AttemptRecord khớp 100% với 19 trường trong firebase-blueprint.json & firestore.rules
+ * (Loại bỏ mọi giá trị undefined để Firestore SDK không báo lỗi, bảo mật che giấu SĐT/Email nếu có).
  */
 export function normalizeAttemptForFirestore(attempt: AttemptRecord): AttemptRecord {
   const safeId = sanitizeAttemptDocId(attempt.id);
+  const safeSbd = sanitizeAttemptSbd(attempt.sbd);
   const safeSchool = (attempt.school || 'Trường THPT Tỉnh Vĩnh Long').trim().slice(0, 200);
-  const safePhone = (attempt.phone || '0000000000').trim().slice(0, 20);
-  const safeEmail = (attempt.email || 'hocsinh@vinhlong.edu.vn')
-    .trim()
-    .toLowerCase()
-    .slice(0, 160);
+  const safePhone = maskPhone(attempt.phone).slice(0, 20);
+  const safeEmail = maskEmail(attempt.email).slice(0, 160);
   const safeSubmittedAt = (attempt.submittedAt || new Date().toISOString()).slice(0, 64);
 
   const safePart1Answers: Record<string, 'A' | 'B' | 'C' | 'D' | null> = {};
@@ -89,9 +96,10 @@ export function normalizeAttemptForFirestore(attempt: AttemptRecord): AttemptRec
 
   return {
     id: safeId,
+    sbd: safeSbd,
     school: safeSchool.length >= 3 ? safeSchool : 'THPT Vĩnh Long',
-    phone: safePhone.length >= 8 ? safePhone : '0900000000',
-    email: safeEmail.length >= 5 ? safeEmail : 'hs@vinhlong.edu.vn',
+    phone: safePhone,
+    email: safeEmail,
     submittedAt: safeSubmittedAt.length >= 10 ? safeSubmittedAt : new Date().toISOString(),
     durationSpentSeconds: clampNumber(attempt.durationSpentSeconds, 0, 7200, true),
     violations: clampNumber(attempt.violations, 0, 50, true),

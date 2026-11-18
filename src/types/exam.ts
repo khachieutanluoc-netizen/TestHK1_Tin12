@@ -97,6 +97,7 @@ export interface LessonMastery {
 
 export interface AttemptRecord {
   id: string;
+  sbd: string;
   school: string;
   phone: string;
   email: string;
@@ -119,6 +120,7 @@ export interface AttemptRecord {
 export interface StudentRankingRow {
   rank: number;
   studentKey: string;
+  sbd: string;
   phone: string;
   email: string;
   school: string;

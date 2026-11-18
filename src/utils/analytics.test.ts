@@ -10,9 +10,10 @@ import { createEmptyAnswers, generateExam, gradeExam } from './examEngine';
 // Helper to create deterministic synthetic AttemptRecord matching real schema
 function makeAttempt(params: {
   id: string;
+  sbd: string;
   school: string;
-  phone: string;
-  email: string;
+  phone?: string;
+  email?: string;
   submittedAt: string;
   totalScore: number;
   lessonAccuracies: Record<number, number>;
@@ -20,9 +21,10 @@ function makeAttempt(params: {
   const exam = generateExam(ALL_D1_QUESTIONS, ALL_D2_QUESTIONS, () => 0.42);
   const base = gradeExam(exam, createEmptyAnswers(exam), {
     attemptId: params.id,
+    sbd: params.sbd,
     school: params.school,
-    phone: params.phone,
-    email: params.email,
+    phone: params.phone ?? '',
+    email: params.email ?? '',
     submittedAt: params.submittedAt,
     durationSpentSeconds: 1500,
     violations: 0,
@@ -44,11 +46,12 @@ function makeAttempt(params: {
   };
 }
 
-test('computeDashboardStats ranks students by average score descending across multiple attempts', () => {
+test('computeDashboardStats groups by 8-digit SBD and ranks students by average score descending', () => {
   const attempts: AttemptRecord[] = [
-    // Student A: 2 attempts -> avg 8.5
+    // Student A (SBD 11111111): 2 attempts -> avg 8.5 (second attempt without optional email/phone)
     makeAttempt({
       id: 'A1',
+      sbd: '11111111',
       school: SCHOOLS[0],
       phone: '0901111111',
       email: 'a@vl.edu.vn',
@@ -58,29 +61,28 @@ test('computeDashboardStats ranks students by average score descending across mu
     }),
     makeAttempt({
       id: 'A2',
+      sbd: '11111111',
       school: SCHOOLS[0],
-      phone: '0901111111',
-      email: 'a@vl.edu.vn',
+      phone: '',
+      email: '',
       submittedAt: '2026-10-02T08:00:00Z',
       totalScore: 9.0,
       lessonAccuracies: { 1: 100, 9: 60, 10: 95 },
     }),
-    // Student B: 1 attempt -> avg 9.25 (Rank 1)
+    // Student B (SBD 22222222): 1 attempt -> avg 9.25 (Rank 1)
     makeAttempt({
       id: 'B1',
+      sbd: '22222222',
       school: SCHOOLS[1],
-      phone: '0902222222',
-      email: 'b@vl.edu.vn',
       submittedAt: '2026-10-02T09:00:00Z',
       totalScore: 9.25,
       lessonAccuracies: { 1: 95, 9: 90, 10: 92 },
     }),
-    // Student C: 1 attempt -> avg 5.5 (Rank 3, weak in Lesson 10)
+    // Student C (SBD 33333333): 1 attempt -> avg 5.5 (Rank 3, weak in Lesson 10)
     makeAttempt({
       id: 'C1',
+      sbd: '33333333',
       school: SCHOOLS[1],
-      phone: '0903333333',
-      email: 'c@vl.edu.vn',
       submittedAt: '2026-10-02T10:00:00Z',
       totalScore: 5.5,
       lessonAccuracies: { 1: 80, 9: 75, 10: 30 },
@@ -92,11 +94,11 @@ test('computeDashboardStats ranks students by average score descending across mu
   assert.equal(allStats.totalAttempts, 4);
   assert.equal(allStats.uniqueStudents, 3);
   assert.deepEqual(
-    allStats.rankings.map((r) => [r.rank, r.email, r.avgScore, r.attemptCount]),
+    allStats.rankings.map((r) => [r.rank, r.sbd, r.avgScore, r.attemptCount]),
     [
-      [1, 'b@vl.edu.vn', 9.25, 1],
-      [2, 'a@vl.edu.vn', 8.5, 2],
-      [3, 'c@vl.edu.vn', 5.5, 1],
+      [1, '22222222', 9.25, 1],
+      [2, '11111111', 8.5, 2],
+      [3, '33333333', 5.5, 1],
     ]
   );
 
@@ -105,22 +107,29 @@ test('computeDashboardStats ranks students by average score descending across mu
   assert.equal(schoolStats.totalAttempts, 2);
   assert.equal(schoolStats.uniqueStudents, 2);
   assert.deepEqual(
-    schoolStats.rankings.map((r) => r.email),
-    ['b@vl.edu.vn', 'c@vl.edu.vn']
+    schoolStats.rankings.map((r) => r.sbd),
+    ['22222222', '33333333']
+  );
+
+  // Search by SBD filter
+  const sbdFiltered = computeDashboardStats(attempts, [], null, 'all', '11111111');
+  assert.deepEqual(
+    sbdFiltered.filteredRankings.map((r) => r.sbd),
+    ['11111111']
   );
 
   // Chart click filter by topic (Lesson 9 -> only Student A has avg < 70% in Lesson 9)
   const topicFiltered = computeDashboardStats(attempts, [], 9, 'all', '');
   assert.deepEqual(
-    topicFiltered.filteredRankings.map((r) => r.email),
-    ['a@vl.edu.vn']
+    topicFiltered.filteredRankings.map((r) => r.sbd),
+    ['11111111']
   );
 
   // Tier filter ('average' 5.0-6.9 -> only Student C)
   const tierFiltered = computeDashboardStats(attempts, [], null, 'average', '');
   assert.deepEqual(
-    tierFiltered.filteredRankings.map((r) => r.email),
-    ['c@vl.edu.vn']
+    tierFiltered.filteredRankings.map((r) => r.sbd),
+    ['33333333']
   );
 
   // School summaries verification
@@ -140,9 +149,8 @@ test('computeDashboardStats ranks students by average score descending across mu
 test('mergeAttempts reconciles cross-device attempts, preserves syncedToDrive flags, and sorts newest first', () => {
   const localAttempt = makeAttempt({
     id: 'DEV1-01',
+    sbd: '44445555',
     school: SCHOOLS[0],
-    phone: '0911111111',
-    email: 'dev1@vl.edu.vn',
     submittedAt: '2026-10-20T08:00:00Z',
     totalScore: 8.25,
     lessonAccuracies: { 1: 100 },
@@ -158,9 +166,8 @@ test('mergeAttempts reconciles cross-device attempts, preserves syncedToDrive fl
 
   const remoteFromDevice2 = makeAttempt({
     id: 'DEV2-01',
+    sbd: '66667777',
     school: SCHOOLS[2],
-    phone: '0922222222',
-    email: 'dev2@vl.edu.vn',
     submittedAt: '2026-10-20T09:30:00Z',
     totalScore: 9.5,
     lessonAccuracies: { 1: 95 },
@@ -177,4 +184,3 @@ test('mergeAttempts reconciles cross-device attempts, preserves syncedToDrive fl
   // syncedToDrive upgraded from remote
   assert.equal(merged[1].syncedToDrive, true);
 });
-

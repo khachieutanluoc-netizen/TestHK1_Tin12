@@ -1,9 +1,17 @@
 import React from 'react';
 import { User } from 'firebase/auth';
-import { BarChart3, Cloud, FileSpreadsheet, GraduationCap, LogOut, RefreshCw } from 'lucide-react';
+import {
+  BarChart3,
+  BookOpen,
+  Cloud,
+  FileSpreadsheet,
+  GraduationCap,
+  LogOut,
+  RefreshCw,
+} from 'lucide-react';
 import { DRIVE_TARGET_FOLDER_URL } from '../services/driveSync';
 
-export type AppTab = 'exam' | 'dashboard';
+export type AppTab = 'exam' | 'dashboard' | 'practice';
 
 interface HeaderProps {
   activeTab: AppTab;
@@ -53,33 +61,46 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="flex flex-wrap items-center justify-between lg:justify-end gap-2.5 shrink-0">
             <nav
               aria-label="Chuyển đổi chức năng chính"
-              className="inline-flex rounded-lg bg-slate-100 p-1 border border-slate-200"
+              className="inline-flex flex-wrap sm:flex-nowrap rounded-lg bg-slate-100 p-1 border border-slate-200"
             >
               <button
                 type="button"
                 onClick={() => onSelectTab('exam')}
                 aria-current={activeTab === 'exam' ? 'page' : undefined}
-                className={`px-3.5 py-1.5 rounded-md text-xs sm:text-sm font-semibold transition-colors cursor-pointer flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-md text-xs sm:text-sm font-semibold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                   activeTab === 'exam'
                     ? 'bg-white text-blue-700 shadow-xs border border-slate-200/80'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                <FileSpreadsheet className="w-4 h-4" />
+                <FileSpreadsheet className="w-4 h-4 shrink-0" />
                 <span>Thẻ 1: Thi thử</span>
               </button>
               <button
                 type="button"
                 onClick={() => onSelectTab('dashboard')}
                 aria-current={activeTab === 'dashboard' ? 'page' : undefined}
-                className={`px-3.5 py-1.5 rounded-md text-xs sm:text-sm font-semibold transition-colors cursor-pointer flex items-center gap-1.5 ${
+                className={`px-3 py-1.5 rounded-md text-xs sm:text-sm font-semibold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                   activeTab === 'dashboard'
                     ? 'bg-white text-blue-700 shadow-xs border border-slate-200/80'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                <BarChart3 className="w-4 h-4" />
+                <BarChart3 className="w-4 h-4 shrink-0" />
                 <span>Thẻ 2: Dashboard Thống kê</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onSelectTab('practice')}
+                aria-current={activeTab === 'practice' ? 'page' : undefined}
+                className={`px-3 py-1.5 rounded-md text-xs sm:text-sm font-semibold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                  activeTab === 'practice'
+                    ? 'bg-white text-blue-700 shadow-xs border border-slate-200/80'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <BookOpen className="w-4 h-4 shrink-0" />
+                <span>Thẻ 3: Ôn tập theo Bài</span>
               </button>
             </nav>
 
