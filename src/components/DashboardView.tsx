@@ -5,7 +5,9 @@ import {
   BarChart3,
   Building2,
   CheckSquare,
+  Cloud,
   Download,
+  ExternalLink,
   Eye,
   FilterX,
   RefreshCw,
@@ -15,8 +17,9 @@ import {
   Users,
 } from 'lucide-react';
 import { SCHOOLS } from '../data/schools';
-import { AttemptRecord, LessonId } from '../types/exam';
+import { FIRESTORE_PRICING_URL, FIRESTORE_UPGRADE_URL } from '../services/firebaseClient';
 import { CloudSyncStatus, formatSyncTimeLabel } from '../services/syncReconciler';
+import { AttemptRecord, LessonId } from '../types/exam';
 import { computeDashboardStats, ScoreTierFilter } from '../utils/analytics';
 import { exportDashboardToExcel } from '../utils/excelExport';
 
@@ -24,6 +27,9 @@ interface DashboardViewProps {
   attempts: AttemptRecord[];
   onInspectAttempt: (attempt: AttemptRecord) => void;
   onRefreshData: () => void;
+  onRetryFirestore?: () => void;
+  onSyncWithDrive?: () => void;
+  hasDriveToken?: boolean;
   isRefreshing?: boolean;
   cloudSyncStatus?: CloudSyncStatus;
   confirmedCloudCount?: number;
@@ -36,6 +42,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   attempts,
   onInspectAttempt,
   onRefreshData,
+  onRetryFirestore,
+  onSyncWithDrive,
+  hasDriveToken = false,
   isRefreshing = false,
   cloudSyncStatus = 'synced',
   confirmedCloudCount,
@@ -149,7 +158,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   className={`w-2 h-2 rounded-full ${
                     cloudSyncStatus === 'error'
                       ? 'bg-rose-600'
-                      : cloudSyncStatus === 'offline'
+                      : cloudSyncStatus === 'offline' || cloudSyncStatus === 'quota'
                         ? 'bg-amber-500'
                         : cloudSyncStatus === 'syncing' || isRefreshing
                           ? 'bg-blue-600 animate-pulse'
@@ -166,13 +175,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
               <span className="text-slate-300 hidden sm:inline">|</span>
 
-              {cloudSyncStatus === 'offline' ? (
+              {cloudSyncStatus === 'quota' ? (
+                <span className="font-medium text-amber-800">
+                  Firestore tạm chạm hạn mức đọc miễn phí trong ngày · Đang dùng bộ nhớ đệm, máy chủ &amp; Google Drive
+                </span>
+              ) : cloudSyncStatus === 'offline' ? (
                 <span className="font-medium text-amber-800">
                   Thiết bị đang ngoại tuyến · Sẽ tự đồng bộ Cloud khi có mạng
                 </span>
               ) : cloudSyncStatus === 'error' ? (
                 <span className="font-medium text-rose-700">
-                  {cloudErrorMessage || 'Chưa kết nối được Cloud Firestore — Đang tự thử lại'}
+                  {cloudErrorMessage || 'Chưa kết nối được Cloud Firestore — Sẽ thử lại khi làm mới'}
                 </span>
               ) : pendingCloudCount > 0 ? (
                 <span className="font-medium text-amber-800">
@@ -210,6 +223,67 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </button>
           </div>
         </div>
+
+        {cloudSyncStatus === 'quota' && (
+          <div
+            role="status"
+            className="rounded-xl border border-amber-300 bg-amber-50/90 p-4 space-y-2.5 text-xs sm:text-sm text-amber-950"
+          >
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-bold text-amber-950">
+                  Cloud Firestore đã tạm chạm hạn mức đọc miễn phí trong ngày (tự động đặt lại vào ngày mai)
+                </p>
+                <p className="text-xs text-amber-900 leading-relaxed">
+                  Toàn bộ dữ liệu bài thi đã tương tác được bảo toàn nguyên vẹn. Ứng dụng đã kích hoạt chế độ <strong>nén dữ liệu 10×</strong> và <strong>tối ưu truy vấn tiết kiệm hạn mức</strong>, đồng thời tiếp tục đồng bộ bình thường qua máy chủ ứng dụng và thư mục <strong>Google Drive</strong>. Các bài mới nộp sẽ tự động đẩy bổ sung lên Firestore ngay khi hạn mức đặt lại.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              {onSyncWithDrive && (
+                <button
+                  type="button"
+                  onClick={onSyncWithDrive}
+                  disabled={isRefreshing}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors cursor-pointer disabled:opacity-60"
+                >
+                  <Cloud className="w-3.5 h-3.5" />
+                  <span>{hasDriveToken ? 'Đồng bộ ngay qua Google Drive' : 'Kết nối & Đồng bộ qua Google Drive'}</span>
+                </button>
+              )}
+              {onRetryFirestore && (
+                <button
+                  type="button"
+                  onClick={onRetryFirestore}
+                  disabled={isRefreshing}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-950 bg-white hover:bg-amber-100 border border-amber-300 rounded-lg transition-colors cursor-pointer disabled:opacity-60"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  <span>Thử kết nối lại Firestore</span>
+                </button>
+              )}
+              <a
+                href={FIRESTORE_UPGRADE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-blue-800 hover:underline"
+              >
+                <span>Mở Firebase Console (nâng cấp hạn mức)</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+              <a
+                href={FIRESTORE_PRICING_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-medium text-slate-700 hover:underline"
+              >
+                <span>Hạn mức Spark (Enterprise)</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          </div>
+        )}
 
         {exportMessage && (
           <div

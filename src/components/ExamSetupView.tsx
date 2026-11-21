@@ -30,6 +30,8 @@ interface ExamSetupViewProps {
   attempts: AttemptRecord[];
   onStartExam: (candidate: CandidateInfo, isNewlyGeneratedSbd: boolean) => void;
   onReviewAttempt: (attempt: AttemptRecord) => void;
+  onLookupSbd?: (sbd: string) => void;
+  onRequestAllCloudAttempts?: () => void;
 }
 
 export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
@@ -37,6 +39,8 @@ export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
   attempts,
   onStartExam,
   onReviewAttempt,
+  onLookupSbd,
+  onRequestAllCloudAttempts,
 }) => {
   const [school, setSchool] = useState(initialCandidate.school);
   const [sbd, setSbd] = useState(initialCandidate.sbd);
@@ -85,8 +89,9 @@ export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
     setSbd(digitsOnly);
     if (errors.sbd) setErrors((prev) => ({ ...prev, sbd: undefined }));
 
-    // Nếu thí sinh nhập đủ 8 ký số khớp lịch sử trên Cloud/thiết bị và chưa chọn trường -> tự điền trường
+    // Nếu thí sinh nhập đủ 8 ký số: tự truy vấn đích danh lịch sử SBD đó từ Cloud và tự điền trường nếu khớp
     if (digitsOnly.length === 8) {
+      onLookupSbd?.(digitsOnly);
       const matched = attempts.find((a) => a.sbd === digitsOnly);
       if (matched && !school) {
         setSchool(matched.school);
@@ -440,7 +445,10 @@ export const ExamSetupView: React.FC<ExamSetupViewProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => setHistoryScope('device')}
+              onClick={() => {
+                setHistoryScope('device');
+                onRequestAllCloudAttempts?.();
+              }}
               className={`px-3 py-1 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
                 historyScope === 'device'
                   ? 'bg-white text-blue-700 shadow-xs'

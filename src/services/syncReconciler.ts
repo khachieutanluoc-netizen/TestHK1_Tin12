@@ -1,7 +1,33 @@
 import { AttemptRecord } from '../types/exam';
 import { isValidSbdFormat } from '../utils/examEngine';
 
-export type CloudSyncStatus = 'syncing' | 'synced' | 'offline' | 'error';
+export type CloudSyncStatus = 'syncing' | 'synced' | 'offline' | 'quota' | 'error';
+
+export const FIRESTORE_QUOTA_COOLDOWN_MS = 10 * 60 * 1000;
+
+export function isFirestoreQuotaError(err: unknown): boolean {
+  if (!err) return false;
+  const parts: string[] = [];
+  if (err instanceof Error) {
+    parts.push(err.message);
+  }
+  if (typeof err === 'object') {
+    const obj = err as { code?: unknown; message?: unknown };
+    if (typeof obj.code === 'string') parts.push(obj.code);
+    if (typeof obj.message === 'string') parts.push(obj.message);
+  } else {
+    parts.push(String(err));
+  }
+  const lower = parts.join(' ').toLowerCase();
+  return (
+    lower.includes('quota exceeded') ||
+    lower.includes('quota limit exceeded') ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('resource-exhausted') ||
+    lower.includes('free daily read units') ||
+    lower.includes('free daily write units')
+  );
+}
 
 export interface CloudSyncSummary {
   totalCount: number;

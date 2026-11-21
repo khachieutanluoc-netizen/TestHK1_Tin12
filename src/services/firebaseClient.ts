@@ -6,8 +6,11 @@ import {
   getDocFromServer,
   getFirestore,
   initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { isFirestoreQuotaError } from './syncReconciler';
 
 export const firebaseApp: FirebaseApp =
   getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
@@ -15,6 +18,23 @@ export const firebaseApp: FirebaseApp =
 export const firebaseAuth: Auth = getAuth(firebaseApp);
 
 function createFirestoreInstance(): Firestore {
+  const isBrowser = typeof window !== 'undefined' && typeof indexedDB !== 'undefined';
+  if (isBrowser) {
+    try {
+      return initializeFirestore(
+        firebaseApp,
+        {
+          experimentalAutoDetectLongPolling: true,
+          localCache: persistentLocalCache({
+            tabManager: persistentMultipleTabManager(),
+          }),
+        },
+        firebaseConfig.firestoreDatabaseId
+      );
+    } catch {
+      // Dự phòng nếu trình duyệt chặn IndexedDB (ẩn danh / iframe hạn chế)
+    }
+  }
   try {
     return initializeFirestore(
       firebaseApp,
@@ -31,19 +51,29 @@ export const firestoreDb: Firestore = createFirestoreInstance();
 
 export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
 export const FIRESTORE_DATABASE_ID = firebaseConfig.firestoreDatabaseId;
+export const FIRESTORE_UPGRADE_URL = `https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/firestore/databases/${FIRESTORE_DATABASE_ID}/data?openUpgradeDialog=true`;
+export const FIRESTORE_PRICING_URL = 'https://firebase.google.com/pricing#cloud-firestore';
 
 let connectionTested = false;
 
-export async function testFirestoreConnection(force = false): Promise<boolean> {
-  if (connectionTested && !force) return true;
+export interface ConnectionTestResult {
+  ok: boolean;
+  quotaExceeded: boolean;
+}
+
+export async function testFirestoreConnection(force = false): Promise<ConnectionTestResult> {
+  if (connectionTested && !force) return { ok: true, quotaExceeded: false };
   connectionTested = true;
   try {
     await getDocFromServer(doc(firestoreDb, 'test', 'connection'));
-    return true;
+    return { ok: true, quotaExceeded: false };
   } catch (error) {
+    if (isFirestoreQuotaError(error)) {
+      return { ok: false, quotaExceeded: true };
+    }
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error('Please check your Firebase configuration (Firestore client is offline).');
     }
-    return false;
+    return { ok: false, quotaExceeded: false };
   }
 }

@@ -2,12 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ALL_D1_QUESTIONS, ALL_D2_QUESTIONS } from '../data/questionBank.ts';
 import { createEmptyAnswers, generateExam, gradeExam } from '../utils/examEngine.ts';
-import { normalizeAttemptForFirestore } from './attemptNormalizer.ts';
+import {
+  hydrateAttemptFromFirestore,
+  normalizeAttemptForFirestore,
+} from './attemptNormalizer.ts';
 import { pushAttemptsToFirestoreDetailed } from './firestoreSync.ts';
 import {
   computeCloudSyncSummary,
   findAttemptsMissingOnRemote,
   haveAttemptsChanged,
+  isFirestoreQuotaError,
 } from './syncReconciler.ts';
 
 function makeSampleAttempt(id: string, sbd: string, totalScore = 5.0) {
@@ -26,7 +30,7 @@ function makeSampleAttempt(id: string, sbd: string, totalScore = 5.0) {
   return { ...graded, totalScore };
 }
 
-test('normalizeAttemptForFirestore produces exact 19 blueprint fields, preserves 8-digit SBD, and masks optional PII', () => {
+test('normalizeAttemptForFirestore produces exact 19 blueprint fields, compact 10x smaller payload, preserves 8-digit SBD, and masks optional PII', () => {
   const exam = generateExam(ALL_D1_QUESTIONS, ALL_D2_QUESTIONS);
   const answers = createEmptyAnswers(exam);
   const graded = gradeExam(exam, answers, {
@@ -76,6 +80,48 @@ test('normalizeAttemptForFirestore produces exact 19 blueprint fields, preserves
   assert.equal(payload.durationSpentSeconds, 120);
   assert.equal(payload.autoSubmittedReason, null);
   assert.match(payload.id, /^[a-zA-Z0-9_\-]+$/);
+
+  // Verify compact size: <= 4096 bytes (1 Firestore Enterprise read unit instead of ~6-10)
+  const rawBytes = Buffer.byteLength(JSON.stringify(graded), 'utf8');
+  const compactBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  assert.ok(
+    compactBytes <= 4096,
+    `Expected compact payload <= 4096 bytes to fit in 1 read unit, got ${compactBytes}`
+  );
+  assert.ok(
+    compactBytes < rawBytes * 0.25,
+    `Expected >75% payload reduction (compact=${compactBytes}, raw=${rawBytes})`
+  );
+});
+
+test('hydrateAttemptFromFirestore losslessly restores both compact payloads and legacy full-exam documents', () => {
+  const exam = generateExam(ALL_D1_QUESTIONS, ALL_D2_QUESTIONS);
+  const answers = createEmptyAnswers(exam);
+  const graded = gradeExam(exam, answers, {
+    attemptId: 'ATT-COMPACT-TEST',
+    sbd: '12349876',
+    school: 'Trường THPT Chuyên Nguyễn Bỉnh Khiêm',
+    phone: '',
+    email: '',
+    durationSpentSeconds: 185,
+    violations: 1,
+    autoSubmittedReason: null,
+  });
+
+  // 1) Compact round-trip
+  const compactDoc = normalizeAttemptForFirestore(graded);
+  const hydratedCompact = hydrateAttemptFromFirestore(compactDoc);
+  assert.ok(hydratedCompact);
+  assert.equal(hydratedCompact.exam.part1.length, graded.exam.part1.length);
+  assert.equal(hydratedCompact.exam.part2.length, graded.exam.part2.length);
+  assert.deepEqual(hydratedCompact.exam.part1, graded.exam.part1);
+  assert.deepEqual(hydratedCompact.exam.part2, graded.exam.part2);
+
+  // 2) Legacy full-exam document already stored in Firestore before compaction
+  const hydratedLegacy = hydrateAttemptFromFirestore(graded);
+  assert.ok(hydratedLegacy);
+  assert.deepEqual(hydratedLegacy.exam.part1, graded.exam.part1);
+  assert.deepEqual(hydratedLegacy.exam.part2, graded.exam.part2);
 });
 
 test('normalizeAttemptForFirestore supports empty phone and email for strict privacy', () => {
@@ -113,6 +159,36 @@ test('pushAttemptsToFirestoreDetailed continues pushing valid attempts when one 
   assert.deepEqual(result.alreadyRemoteIds, ['ATT-EXISTS-3']);
   assert.equal(result.failed.length, 1);
   assert.equal(result.failed[0].id, 'ATT-FAIL-2');
+  assert.equal(result.abortedByQuota, false);
+});
+
+test('pushAttemptsToFirestoreDetailed stops immediately when Firestore quota is exhausted', async () => {
+  const a1 = makeSampleAttempt('ATT-Q1', '11110001');
+  const a2 = makeSampleAttempt('ATT-Q2', '11110002');
+  const a3 = makeSampleAttempt('ATT-Q3', '11110003');
+  const visited: string[] = [];
+
+  const result = await pushAttemptsToFirestoreDetailed([a1, a2, a3], async (att) => {
+    visited.push(att.id);
+    if (att.id === 'ATT-Q2') {
+      const err = new Error('Quota exceeded for quota metric Free daily read units per project');
+      (err as { code?: string }).code = 'resource-exhausted';
+      throw err;
+    }
+    return true;
+  });
+
+  assert.deepEqual(visited, ['ATT-Q1', 'ATT-Q2']);
+  assert.deepEqual(result.pushedIds, ['ATT-Q1']);
+  assert.equal(result.abortedByQuota, true);
+  assert.equal(result.failed.length, 1);
+});
+
+test('isFirestoreQuotaError accurately identifies quota exhaustion errors', () => {
+  assert.equal(isFirestoreQuotaError({ code: 'resource-exhausted', message: 'Quota exceeded' }), true);
+  assert.equal(isFirestoreQuotaError(new Error('RESOURCE_EXHAUSTED: Free daily read units')), true);
+  assert.equal(isFirestoreQuotaError(new Error('permission-denied')), false);
+  assert.equal(isFirestoreQuotaError(null), false);
 });
 
 test('syncReconciler accurately detects changes, missing remote attempts, and cloud sync summary', () => {
