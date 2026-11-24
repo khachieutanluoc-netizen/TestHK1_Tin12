@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDocFromServer,
+  getDocsFromCache,
   getDocsFromServer,
   onSnapshot,
   query,
@@ -205,6 +206,32 @@ export async function fetchFirestoreAttempts(): Promise<AttemptRecord[]> {
     );
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, ATTEMPTS_COLLECTION);
+  }
+}
+
+/**
+ * Đọc dữ liệu đã lưu trong bộ nhớ đệm IndexedDB cục bộ của Firestore (tốn 0 read units trên máy chủ,
+ * hoạt động ngay cả khi ngoại tuyến hoặc đang chạm hạn mức đọc miễn phí trong ngày).
+ */
+export async function fetchFirestoreAttemptsFromCache(): Promise<AttemptRecord[]> {
+  try {
+    const q = query(
+      collection(firestoreDb, ATTEMPTS_COLLECTION),
+      where('isSeedData', '==', false)
+    );
+    const snap = await getDocsFromCache(q);
+    const items: AttemptRecord[] = [];
+    snap.forEach((docSnap) => {
+      const parsed = hydrateAttemptFromFirestore(docSnap.data());
+      if (parsed) {
+        items.push(parsed);
+      }
+    });
+    return items.sort(
+      (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+    );
+  } catch {
+    return [];
   }
 }
 

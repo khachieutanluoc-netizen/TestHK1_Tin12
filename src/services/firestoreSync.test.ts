@@ -212,3 +212,23 @@ test('syncReconciler accurately detects changes, missing remote attempts, and cl
   assert.equal(summary.pendingCount, 1);
   assert.deepEqual(summary.pendingIds, ['ATT-2']);
 });
+
+test('formatDriveAuthError detects auth/unauthorized-domain and provides actionable Firebase Console URL', async () => {
+  const { formatDriveAuthError } = await import('./driveSync.ts');
+  const unauthErr = Object.assign(new Error('Firebase: Error (auth/unauthorized-domain).'), {
+    code: 'auth/unauthorized-domain',
+  });
+  const parsed = formatDriveAuthError(unauthErr, 'vinhlongcode.github.io');
+  assert.equal(parsed.isUnauthorizedDomain, true);
+  assert.equal(parsed.hostname, 'vinhlongcode.github.io');
+  assert.ok(parsed.message.includes('vinhlongcode.github.io'));
+  assert.ok(parsed.authDomainsUrl.includes('/authentication/settings'));
+
+  const popupErr = Object.assign(new Error('Firebase: Error (auth/popup-blocked).'), {
+    code: 'auth/popup-blocked',
+  });
+  const parsedPopup = formatDriveAuthError(popupErr, 'localhost');
+  assert.equal(parsedPopup.isUnauthorizedDomain, false);
+  assert.equal(parsedPopup.code, 'auth/popup-blocked');
+  assert.ok(parsedPopup.message.includes('popup'));
+});

@@ -53,6 +53,7 @@ export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
 export const FIRESTORE_DATABASE_ID = firebaseConfig.firestoreDatabaseId;
 export const FIRESTORE_UPGRADE_URL = `https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/firestore/databases/${FIRESTORE_DATABASE_ID}/data?openUpgradeDialog=true`;
 export const FIRESTORE_PRICING_URL = 'https://firebase.google.com/pricing#cloud-firestore';
+export const FIREBASE_AUTH_DOMAINS_URL = `https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/authentication/settings`;
 
 let connectionTested = false;
 

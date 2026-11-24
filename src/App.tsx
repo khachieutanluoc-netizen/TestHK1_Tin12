@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { User } from 'firebase/auth';
-import { CheckCircle2, Info, X, XCircle } from 'lucide-react';
+import { CheckCircle2, Copy, ExternalLink, Info, X, XCircle } from 'lucide-react';
 import { ActiveExamView } from './components/ActiveExamView';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { DashboardView } from './components/DashboardView';
@@ -11,7 +11,9 @@ import { LessonPracticeView } from './components/LessonPracticeView';
 import { ALL_D1_QUESTIONS, ALL_D2_QUESTIONS } from './data/questionBank';
 import {
   DRIVE_TARGET_FOLDER_URL,
+  FIREBASE_AUTH_DOMAINS_URL,
   findConsolidatedDriveFile,
+  formatDriveAuthError,
   getCachedDriveToken,
   signInWithGoogleDrive,
   signOutGoogleDrive,
@@ -25,6 +27,7 @@ import {
   clearFirestoreQuotaCooldown,
   fetchFirestoreAttempts,
   fetchFirestoreAttemptsBySbd,
+  fetchFirestoreAttemptsFromCache,
   formatFirestoreUserMessage,
   getConfirmedFirestoreIds,
   isFirestoreInQuotaCooldown,
@@ -117,13 +120,15 @@ export default function App() {
     tone: 'success' | 'error' | 'info';
     message: string;
   } | null>(null);
+  const [unauthorizedDomainHost, setUnauthorizedDomainHost] = useState<string | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState<boolean>(false);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmState | null>(null);
 
   const cloudSyncInFlightRef = useRef<boolean>(false);
-  const lastManualFirestoreFetchRef = useRef<number>(0);
   const snapshotHealthyRef = useRef<boolean>(false);
   const lookedUpSbdsRef = useRef<Set<string>>(new Set());
   const pendingPushInFlightRef = useRef<boolean>(false);
+  const initialSbdRef = useRef<string>(candidate.sbd);
 
   const commitAttempts = useCallback((next: AttemptRecord[], broadcast = false) => {
     attemptsRef.current = next;
@@ -185,6 +190,20 @@ export default function App() {
       return merged;
     } catch {
       return null;
+    }
+  }, [commitAttempts]);
+
+  // Khôi phục dữ liệu từ bộ nhớ đệm IndexedDB cục bộ của Firestore (0 lượt đọc máy chủ)
+  const hydrateFromFirestoreCache = useCallback(async () => {
+    try {
+      const cached = await fetchFirestoreAttemptsFromCache();
+      if (cached.length === 0) return;
+      const merged = mergeAttempts(attemptsRef.current, cached);
+      if (haveAttemptsChanged(attemptsRef.current, merged)) {
+        commitAttempts(merged, false);
+      }
+    } catch {
+      // Bỏ qua nếu trình duyệt hạn chế IndexedDB
     }
   }, [commitAttempts]);
 
@@ -278,6 +297,7 @@ export default function App() {
         await syncWithServerOnly();
 
         if (isFirestoreInQuotaCooldown()) {
+          await hydrateFromFirestoreCache();
           setCloudSyncStatus('quota');
           setCloudErrorMessage(
             'Cloud Firestore đã tạm chạm hạn mức đọc miễn phí trong ngày (tự động đặt lại vào ngày mai).'
@@ -286,17 +306,13 @@ export default function App() {
             const realCount = attemptsRef.current.filter((a) => !a.isSeedData).length;
             showBanner(
               'info',
-              `Đã làm mới từ máy chủ ứng dụng & thiết bị (${realCount} lượt). Cloud Firestore đang tạm nghỉ do chạm hạn mức miễn phí trong ngày.`
+              `Đã làm mới từ bộ nhớ đệm & máy chủ ứng dụng (${realCount} lượt). Cloud Firestore đang tạm nghỉ do chạm hạn mức miễn phí trong ngày.`
             );
           }
           return false;
         }
 
-        const now = Date.now();
-        const canReuseLiveSnapshot =
-          snapshotHealthyRef.current &&
-          !opts?.forceFirestoreRead &&
-          now - lastManualFirestoreFetchRef.current < 60_000;
+        const canReuseLiveSnapshot = snapshotHealthyRef.current && !opts?.forceFirestoreRead;
 
         if (canReuseLiveSnapshot) {
           await pushPendingLocalAttemptsToFirestore(attemptsRef.current);
@@ -314,7 +330,6 @@ export default function App() {
         }
 
         setCloudSyncStatus('syncing');
-        lastManualFirestoreFetchRef.current = now;
 
         const firestoreAttempts = await fetchFirestoreAttempts();
         const remoteIds = new Set(firestoreAttempts.map((a) => a.id));
@@ -379,7 +394,14 @@ export default function App() {
         if (!opts?.silent) setIsRefreshingCloud(false);
       }
     },
-    [addConfirmedCloudIds, commitAttempts, pushPendingLocalAttemptsToFirestore, showBanner, syncWithServerOnly]
+    [
+      addConfirmedCloudIds,
+      commitAttempts,
+      hydrateFromFirestoreCache,
+      pushPendingLocalAttemptsToFirestore,
+      showBanner,
+      syncWithServerOnly,
+    ]
   );
 
   // Theo dõi trạng thái Firebase Auth
@@ -391,11 +413,12 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Khởi tạo đồng bộ nhẹ (KHÔNG đọc toàn bộ Firestore trên Thẻ 1 / Thẻ 3 để tiết kiệm >95% hạn mức)
+  // Khởi tạo đồng bộ nhẹ 1 lần khi mở ứng dụng (KHÔNG đọc toàn bộ Firestore trên Thẻ 1 / Thẻ 3 để tiết kiệm >95% hạn mức)
   useEffect(() => {
     let unmounted = false;
 
     void syncWithServerOnly();
+    void hydrateFromFirestoreCache();
 
     if (isFirestoreInQuotaCooldown()) {
       setCloudSyncStatus('quota');
@@ -410,8 +433,8 @@ export default function App() {
           );
           return;
         }
-        if (res.ok && isValidSbdFormat(candidate.sbd)) {
-          void lookupAttemptsBySbd(candidate.sbd);
+        if (res.ok && isValidSbdFormat(initialSbdRef.current)) {
+          void lookupAttemptsBySbd(initialSbdRef.current);
         }
       });
     }
@@ -478,17 +501,19 @@ export default function App() {
         channel.close();
       }
     };
-  }, [candidate.sbd, lookupAttemptsBySbd, syncWithServerOnly]);
+  }, [hydrateFromFirestoreCache, lookupAttemptsBySbd, syncWithServerOnly]);
 
   // Kích hoạt DUY NHẤT 1 luồng onSnapshot toàn tỉnh khi người dùng mở Dashboard (hoặc xem toàn bộ lịch sử Cloud),
   // giữ nguyên kết nối trong phiên để chuyển qua lại giữa các thẻ tốn 0 lượt đọc thêm, và tự ngắt khi chạm quota.
   useEffect(() => {
     if (!provinceSyncEnabled) return;
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      void hydrateFromFirestoreCache();
       setCloudSyncStatus('offline');
       return;
     }
     if (isFirestoreInQuotaCooldown()) {
+      void hydrateFromFirestoreCache();
       setCloudSyncStatus('quota');
       return;
     }
@@ -545,6 +570,7 @@ export default function App() {
     addConfirmedCloudIds,
     commitAttempts,
     firestoreRetryNonce,
+    hydrateFromFirestoreCache,
     provinceSyncEnabled,
     pushPendingLocalAttemptsToFirestore,
     syncWithServerOnly,
@@ -647,6 +673,7 @@ export default function App() {
     setIsSyncingDrive(true);
     try {
       const { user, hasToken } = await signInWithGoogleDrive();
+      setUnauthorizedDomainHost(null);
       setDriveUser(user);
       setHasDriveToken(hasToken);
       if (hasToken) {
@@ -657,8 +684,13 @@ export default function App() {
       }
     } catch (err) {
       setIsSyncingDrive(false);
-      const msg = err instanceof Error ? err.message : 'Đăng nhập Google Drive thất bại.';
-      showBanner('error', msg);
+      const authErr = formatDriveAuthError(err);
+      if (authErr.isUnauthorizedDomain) {
+        setUnauthorizedDomainHost(authErr.hostname || 'tên miền hiện tại');
+        setStatusBanner(null);
+      } else {
+        showBanner('error', authErr.message);
+      }
     }
   }, [runDriveTwoWaySync, showBanner]);
 
@@ -667,6 +699,7 @@ export default function App() {
       setIsSyncingDrive(true);
       try {
         const { user, hasToken } = await signInWithGoogleDrive();
+        setUnauthorizedDomainHost(null);
         setDriveUser(user);
         setHasDriveToken(hasToken);
         if (hasToken) {
@@ -680,8 +713,13 @@ export default function App() {
         }
       } catch (err) {
         setIsSyncingDrive(false);
-        const msg = err instanceof Error ? err.message : 'Kết nối Google Drive thất bại.';
-        showBanner('error', msg);
+        const authErr = formatDriveAuthError(err);
+        if (authErr.isUnauthorizedDomain) {
+          setUnauthorizedDomainHost(authErr.hostname || 'tên miền hiện tại');
+          setStatusBanner(null);
+        } else {
+          showBanner('error', authErr.message);
+        }
       }
     },
     [runDriveTwoWaySync, showBanner]
@@ -1032,6 +1070,69 @@ export default function App() {
         onSyncFromDrive={handleSyncFromDrive}
         onBackupConsolidatedToDrive={handleBackupConsolidatedToDrive}
       />
+
+      {/* Hướng dẫn khắc phục auth/unauthorized-domain khi chạy trên tên miền chưa cấp phép */}
+      {unauthorizedDomainHost && (
+        <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-4">
+          <div
+            role="alert"
+            className="px-4 py-3.5 rounded-xl border border-rose-200 bg-rose-50 text-rose-950 text-xs sm:text-sm space-y-2.5"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <XCircle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+                <div className="space-y-1 min-w-0">
+                  <p className="font-bold text-rose-950">
+                    Chưa cấp phép tên miền đăng nhập Google Drive ({' '}
+                    <code className="font-mono px-1.5 py-0.5 rounded bg-rose-100 text-rose-900">
+                      {unauthorizedDomainHost}
+                    </code>{' '}
+                    )
+                  </p>
+                  <p className="text-xs text-rose-900 leading-relaxed">
+                    Firebase Authentication yêu cầu thêm tên miền đang chạy vào mục{' '}
+                    <strong>Authentication → Settings → Authorized domains</strong> (chỉ cần thao tác 1 lần, có hiệu lực ngay, không làm mất dữ liệu thi).
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUnauthorizedDomainHost(null)}
+                aria-label="Đóng thông báo lỗi tên miền"
+                className="p-1 rounded-md hover:bg-rose-100 cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 pl-6">
+              <button
+                type="button"
+                onClick={() => {
+                  if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                    void navigator.clipboard.writeText(unauthorizedDomainHost).then(() => {
+                      setCopiedDomain(true);
+                      window.setTimeout(() => setCopiedDomain(false), 2500);
+                    });
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-950 bg-white hover:bg-rose-100 border border-rose-300 rounded-lg transition-colors cursor-pointer"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>{copiedDomain ? 'Đã sao chép tên miền!' : `Sao chép "${unauthorizedDomainHost}"`}</span>
+              </button>
+              <a
+                href={FIREBASE_AUTH_DOMAINS_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg transition-colors"
+              >
+                <span>Mở Firebase Console → Authorized domains</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Non-blocking status notification banner */}
       {statusBanner && (

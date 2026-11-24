@@ -6,7 +6,83 @@ import {
   signOut,
 } from 'firebase/auth';
 import { AttemptRecord } from '../types/exam';
-import { firebaseAuth } from './firebaseClient';
+import { hydrateAttemptFromFirestore } from './attemptNormalizer';
+import { FIREBASE_AUTH_DOMAINS_URL, firebaseAuth } from './firebaseClient';
+
+export { FIREBASE_AUTH_DOMAINS_URL };
+
+export interface DriveAuthErrorInfo {
+  code: string;
+  message: string;
+  isUnauthorizedDomain: boolean;
+  hostname: string;
+  authDomainsUrl: string;
+}
+
+export function formatDriveAuthError(err: unknown, hostnameOverride?: string): DriveAuthErrorInfo {
+  const code =
+    err && typeof err === 'object' && 'code' in err && typeof (err as { code?: unknown }).code === 'string'
+      ? (err as { code: string }).code
+      : '';
+  const rawMessage = err instanceof Error ? err.message : String(err ?? '');
+  const combined = `${code} ${rawMessage}`.toLowerCase();
+  const hostname =
+    hostnameOverride ?? (typeof window !== 'undefined' ? window.location.hostname : '');
+
+  if (combined.includes('auth/unauthorized-domain') || combined.includes('unauthorized-domain')) {
+    return {
+      code: 'auth/unauthorized-domain',
+      message: hostname
+        ? `Tên miền "${hostname}" chưa được thêm vào danh sách Authorized domains của Firebase Authentication nên trình duyệt chặn đăng nhập Google Drive.`
+        : 'Tên miền hiện tại chưa được thêm vào danh sách Authorized domains của Firebase Authentication nên không thể đăng nhập Google Drive.',
+      isUnauthorizedDomain: true,
+      hostname,
+      authDomainsUrl: FIREBASE_AUTH_DOMAINS_URL,
+    };
+  }
+
+  if (combined.includes('auth/popup-blocked')) {
+    return {
+      code: 'auth/popup-blocked',
+      message:
+        'Trình duyệt đã chặn cửa sổ đăng nhập Google (popup). Vui lòng cho phép mở cửa sổ bật lên cho trang này rồi nhấn "Kết nối Google Drive" lại.',
+      isUnauthorizedDomain: false,
+      hostname,
+      authDomainsUrl: FIREBASE_AUTH_DOMAINS_URL,
+    };
+  }
+
+  if (
+    combined.includes('auth/popup-closed-by-user') ||
+    combined.includes('auth/cancelled-popup-request')
+  ) {
+    return {
+      code: code || 'auth/popup-closed-by-user',
+      message: 'Bạn đã đóng cửa sổ đăng nhập Google trước khi hoàn tất kết nối Google Drive.',
+      isUnauthorizedDomain: false,
+      hostname,
+      authDomainsUrl: FIREBASE_AUTH_DOMAINS_URL,
+    };
+  }
+
+  if (combined.includes('auth/network-request-failed')) {
+    return {
+      code: 'auth/network-request-failed',
+      message: 'Lỗi kết nối mạng khi đăng nhập Google Drive. Vui lòng kiểm tra đường truyền và thử lại.',
+      isUnauthorizedDomain: false,
+      hostname,
+      authDomainsUrl: FIREBASE_AUTH_DOMAINS_URL,
+    };
+  }
+
+  return {
+    code,
+    message: rawMessage || 'Đăng nhập Google Drive thất bại. Vui lòng thử lại.',
+    isUnauthorizedDomain: false,
+    hostname,
+    authDomainsUrl: FIREBASE_AUTH_DOMAINS_URL,
+  };
+}
 
 // Thư mục Google Drive đích được người dùng chỉ định
 export const DRIVE_TARGET_FOLDER_ID = '13noH2pKEpJVVfwy5r2zO-q_U4GVEI46x';
@@ -203,7 +279,14 @@ export async function fetchRemoteAttemptsFromDrive(): Promise<FetchDriveResult> 
           );
           if (Array.isArray((content as { attempts?: AttemptRecord[] }).attempts)) {
             for (const item of (content as { attempts: AttemptRecord[] }).attempts) {
-              if (item && item.id && item.exam && !item.isSeedData) {
+              const hydrated = hydrateAttemptFromFirestore(item);
+              if (hydrated) {
+                collected.set(hydrated.id, {
+                  ...hydrated,
+                  syncedToDrive: true,
+                  isSeedData: false,
+                });
+              } else if (item && item.id && item.exam && !item.isSeedData) {
                 collected.set(item.id, {
                   ...item,
                   syncedToDrive: true,
@@ -211,17 +294,26 @@ export async function fetchRemoteAttemptsFromDrive(): Promise<FetchDriveResult> 
                 });
               }
             }
-          } else if (
-            (content as AttemptRecord).id &&
-            (content as AttemptRecord).exam &&
-            !(content as AttemptRecord).isSeedData
-          ) {
-            const item = content as AttemptRecord;
-            collected.set(item.id, {
-              ...item,
-              syncedToDrive: true,
-              isSeedData: false,
-            });
+          } else {
+            const hydrated = hydrateAttemptFromFirestore(content);
+            if (hydrated) {
+              collected.set(hydrated.id, {
+                ...hydrated,
+                syncedToDrive: true,
+                isSeedData: false,
+              });
+            } else if (
+              (content as AttemptRecord).id &&
+              (content as AttemptRecord).exam &&
+              !(content as AttemptRecord).isSeedData
+            ) {
+              const item = content as AttemptRecord;
+              collected.set(item.id, {
+                ...item,
+                syncedToDrive: true,
+                isSeedData: false,
+              });
+            }
           }
         } catch {
           errorCount += 1;
